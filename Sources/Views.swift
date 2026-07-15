@@ -52,28 +52,101 @@ struct StackBadge: View {
   }
 }
 
+// MARK: - 窗口可见性（驱动“看不见就停动画”）
+
+/// 宿主 NSWindow 是否真的在屏上（occlusionState）。
+/// MenuBarExtra 面板窗口从启动就常驻不销毁，repeatForever/TimelineView 都会在
+/// 不可见时继续烧 CPU（实测 30%/14% 底噪），必须显式按可见性摘掉动画视图。
+private struct WindowVisibleKey: EnvironmentKey { static let defaultValue = true }
+
+extension EnvironmentValues {
+  var windowVisible: Bool {
+    get { self[WindowVisibleKey.self] }
+    set { self[WindowVisibleKey.self] = newValue }
+  }
+}
+
+private struct WindowVisibleReader: NSViewRepresentable {
+  @Binding var visible: Bool
+
+  func makeNSView(context: Context) -> TrackerView { TrackerView(binding: $visible) }
+  func updateNSView(_ view: TrackerView, context: Context) {}
+
+  final class TrackerView: NSView {
+    let binding: Binding<Bool>
+    private var observer: NSObjectProtocol?
+
+    init(binding: Binding<Bool>) {
+      self.binding = binding
+      super.init(frame: .zero)
+    }
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      if let observer { NotificationCenter.default.removeObserver(observer) }
+      observer = nil
+      if let window {
+        observer = NotificationCenter.default.addObserver(
+          forName: NSWindow.didChangeOcclusionStateNotification,
+          object: window, queue: .main) { [weak self] _ in self?.push()
+        }
+      }
+      push()
+    }
+
+    private func push() {
+      let value = window.map { $0.isVisible && $0.occlusionState.contains(.visible) } ?? false
+      // 避免在视图更新周期内改 state
+      DispatchQueue.main.async { [binding] in
+        if binding.wrappedValue != value { binding.wrappedValue = value }
+      }
+    }
+
+    deinit {
+      if let observer { NotificationCenter.default.removeObserver(observer) }
+    }
+  }
+}
+
+extension View {
+  /// 挂在窗口根视图上，把真实可见性注入 environment（StatusDot 等动画按它启停）
+  func trackWindowVisibility() -> some View {
+    modifier(TrackWindowVisibility())
+  }
+}
+
+private struct TrackWindowVisibility: ViewModifier {
+  @State private var visible = true
+
+  func body(content: Content) -> some View {
+    content
+      .environment(\.windowVisible, visible)
+      .background(WindowVisibleReader(visible: $visible))
+  }
+}
+
 // MARK: - 运行状态点（运行中带呼吸脉冲）
 
 struct StatusDot: View {
   let running: Bool
-  @State private var pulsing = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.windowVisible) private var windowVisible
 
   var body: some View {
     Circle()
       .fill(running ? Color.green : Color.secondary.opacity(0.4))
       .frame(width: 7, height: 7)
       .background {
-        if running && !reduceMotion {
-          Circle()
-            .stroke(Color.green.opacity(0.5), lineWidth: 2)
-            .scaleEffect(pulsing ? 2.4 : 1)
-            .opacity(pulsing ? 0 : 0.8)
-            .onAppear {
-              withAnimation(.easeOut(duration: 1.8).repeatForever(autoreverses: false)) {
-                pulsing = true
-              }
-            }
+        if running && !reduceMotion && windowVisible {
+          TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+            let phase = context.date.timeIntervalSinceReferenceDate
+              .truncatingRemainder(dividingBy: 1.8) / 1.8
+            Circle()
+              .stroke(Color.green.opacity(0.5), lineWidth: 2)
+              .scaleEffect(1 + 1.4 * phase)
+              .opacity(0.8 * (1 - phase))
+          }
         }
       }
   }

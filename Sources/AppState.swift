@@ -47,18 +47,38 @@ final class AppState: ObservableObject {
 
   // 采集周期：原为 2 秒，放宽到 3 秒，采集 CPU 尖峰频率下降约 1/3
   private let interval: TimeInterval = 3
+  // 主窗口和菜单面板都不可见时的采集周期（采集是能耗大头，没人看就不用 3s 一轮）
+  private let idleInterval: TimeInterval = 30
+  private var lastCollect = Date.distantPast
+
+  /// 有任何自家 UI 在屏上可见（occlusionState 按遮挡判断，不看焦点——
+  /// scenePhase / didResignActive 两条路都实测失败过，见 memory bashlook-performance）。
+  /// 排除菜单栏图标本身（NSStatusBarWindow 永远可见）。
+  private var anyUIVisible: Bool {
+    NSApp.windows.contains { w in
+      w.isVisible && w.occlusionState.contains(.visible)
+        && !w.className.contains("StatusBar")
+    }
+  }
 
   func start() {
     guard timer == nil else { return }  // 窗口关闭重开时 .task 会再次触发
     Task { await refresh() }
     timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-      Task { await self?.refresh() }
+      Task { await self?.tick() }
     }
+    timer?.tolerance = 0.5  // 允许系统合并定时器唤醒，省电
+  }
+
+  private func tick() async {
+    if !anyUIVisible, Date().timeIntervalSince(lastCollect) < idleInterval { return }
+    await refresh()
   }
 
   func refresh(manual: Bool = false) async {
     guard !refreshing else { return }
     refreshing = true
+    lastCollect = Date()
     if manual { isRefreshing = true }
     let next = await Monitor.collectSnapshot()
     // 不用 withAnimation：每 2 秒刷新若给整个 snapshot 变化套动画，
