@@ -10,11 +10,11 @@
 - **Dependency detection** — discovers which services talk to which (via established TCP connections) and draws the parent/child tree
 - **Cascade start** — start a service and its dependencies in one click; saved to `~/.portdock/services.json`
 - **Favorites & grouping** — pin your projects, auto-grouped by type (web / agent / infra)
+- **Menu bar quick actions** — start / restart / stop favorites and open them in the browser without leaving the menu bar
 - **System glance** — CPU, memory, listening/stopped counts at the top
 - **LAN share** — optionally expose the dashboard to your local network
+- **English & 中文** — follows your system language, switchable in Settings (⌘,)
 - Zero Electron, zero runtime dependencies — a single native SwiftUI binary
-
-> UI is currently Chinese-first. English localization is on the roadmap.
 
 ## Install
 

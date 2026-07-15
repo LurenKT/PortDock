@@ -139,9 +139,18 @@ enum ServiceAction {
 
   var label: String {
     switch self {
-    case .start: return "启动"
-    case .restart: return "重启"
-    case .stop: return "关闭"
+    case .start: return t("启动", "Start")
+    case .restart: return t("重启", "Restart")
+    case .stop: return t("关闭", "Stop")
+    }
+  }
+
+  /* 完成时态，用于 toast 文案 */
+  var done: String {
+    switch self {
+    case .start: return t("已启动", "Started")
+    case .restart: return t("已重启", "Restarted")
+    case .stop: return t("已关闭", "Stopped")
     }
   }
 }

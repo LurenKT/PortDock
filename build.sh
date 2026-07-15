@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 
 APP=build/PortDock.app
 SIGN_ID="${SIGN_ID:--}"
-SOURCES=(Sources/Main.swift Sources/Models.swift Sources/Monitor.swift Sources/AppState.swift Sources/Views.swift)
+SOURCES=(Sources/*.swift)
 
 rm -rf build
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
@@ -21,6 +21,8 @@ rm build/PortDock-arm64 build/PortDock-x86_64
 
 cp Info.plist "$APP/Contents/"
 cp icon/AppIcon.icns "$APP/Contents/Resources/"
+# 空 lproj 让系统菜单（关于/编辑/退出等）跟随系统语言；app 内文案走 L10n.swift
+mkdir -p "$APP/Contents/Resources/en.lproj" "$APP/Contents/Resources/zh-Hans.lproj"
 
 if [ "$SIGN_ID" = "-" ]; then
   codesign --force -s - "$APP"

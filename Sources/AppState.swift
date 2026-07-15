@@ -49,6 +49,7 @@ final class AppState: ObservableObject {
   private let interval: TimeInterval = 3
 
   func start() {
+    guard timer == nil else { return }  // 窗口关闭重开时 .task 会再次触发
     Task { await refresh() }
     timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
       Task { await self?.refresh() }
@@ -182,13 +183,13 @@ final class AppState: ObservableObject {
     guard let id = row.serviceId else { return }
     let isFav = isFavorite(row)
     Monitor.setFavorite(id: id, favorite: !isFav, from: row)
-    toast(isFav ? "已取消收藏" : "已收藏到侧栏")
+    toast(isFav ? t("已取消收藏", "Unfavorited") : t("已收藏到侧栏", "Added to sidebar"))
     Task { await refresh() }
   }
 
   func unfavorite(id: String) {
     Monitor.setFavorite(id: id, favorite: false)
-    toast("已取消收藏")
+    toast(t("已取消收藏", "Unfavorited"))
     Task { await refresh() }
   }
 
@@ -203,7 +204,7 @@ final class AppState: ObservableObject {
         startingIds.remove(favorite.id)
         toast(result.message)
       } else {
-        if !deps.isEmpty { toast("已连带启动依赖: \(deps.joined(separator: "、"))") }
+        if !deps.isEmpty { toast(t("已连带启动依赖: ", "Also started: ") + deps.joined(separator: t("、", ", "))) }
         // 兜底：启动失败没起来时不让 spinner 永远转
         Task {
           try? await Task.sleep(nanoseconds: 8_000_000_000)
@@ -245,7 +246,7 @@ final class AppState: ObservableObject {
         await refresh()
       }
       if action == .stop {
-        toast("已关闭 \(favorite.title) 及其依赖")
+        toast(t("已关闭 \(favorite.title) 及其依赖", "Stopped \(favorite.title) and its dependencies"))
       } else {
         if action == .restart { try? await Task.sleep(nanoseconds: 500_000_000) }
         startingIds.insert(favorite.id)
@@ -253,8 +254,8 @@ final class AppState: ObservableObject {
           favorite.record, runningIds: runningServiceIds, runningPorts: runningPorts)
         if result.ok {
           toast(deps.isEmpty
-            ? "已\(action.label) \(favorite.title)"
-            : "已\(action.label) \(favorite.title) + \(deps.joined(separator: "、"))")
+            ? "\(action.done) \(favorite.title)"
+            : "\(action.done) \(favorite.title) + \(deps.joined(separator: t("、", ", ")))")
         } else {
           startingIds.remove(favorite.id)
           toast(result.message)
@@ -303,7 +304,7 @@ final class AppState: ObservableObject {
           }
         }
       }
-      toast("已\(action.label) \(label)")
+      toast("\(action.done) \(label)")
       await refresh()
     }
   }
@@ -311,8 +312,8 @@ final class AppState: ObservableObject {
   func startStopped(_ record: ServiceRecord) {
     let (result, deps) = Monitor.startWithDependencies(
       record, runningIds: runningServiceIds, runningPorts: runningPorts)
-    let suffix = deps.isEmpty ? "" : "（依赖: \(deps.joined(separator: "、"))）"
-    toast(result.ok ? "已启动 \(record.name)\(suffix)" : result.message)
+    let suffix = deps.isEmpty ? "" : t("（依赖: \(deps.joined(separator: "、"))）", " (deps: \(deps.joined(separator: ", ")))")
+    toast(result.ok ? t("已启动", "Started") + " \(record.name)\(suffix)" : result.message)
     Task { await refresh() }
   }
 

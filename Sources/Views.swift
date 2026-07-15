@@ -83,6 +83,7 @@ struct StatusDot: View {
 
 struct ContentView: View {
   @EnvironmentObject var state: AppState
+  @AppStorage(langKey) private var lang = "system"
 
   var body: some View {
     NavigationSplitView {
@@ -91,12 +92,12 @@ struct ContentView: View {
     } detail: {
       MainView()
     }
-    .searchable(text: $state.searchText, placement: .toolbar, prompt: "端口、PID、命令")
+    .searchable(text: $state.searchText, placement: .toolbar, prompt: t("端口、PID、命令", "Port, PID, command"))
     .toolbar {
       ToolbarItem(placement: .navigation) {
-        Picker("显示模式", selection: $state.simpleMode) {
-          Text("简单").tag(true)
-          Text("完整").tag(false)
+        Picker(t("显示模式", "Display mode"), selection: $state.simpleMode) {
+          Text(t("简单", "Simple")).tag(true)
+          Text(t("完整", "Full")).tag(false)
         }
         .pickerStyle(.segmented)
       }
@@ -106,30 +107,30 @@ struct ContentView: View {
             Button {
               NSWorkspace.shared.open(url)
             } label: {
-              Label("打开", systemImage: "safari")
+              Label(t("打开", "Open"), systemImage: "safari")
             }
-            .help("在浏览器打开")
+            .help(t("在浏览器打开", "Open in browser"))
           }
           Button {
             state.detailTarget = row
           } label: {
-            Label("详情", systemImage: "info.circle")
+            Label(t("详情", "Details"), systemImage: "info.circle")
           }
-          .help("详细信息")
+          .help(t("详细信息", "Details"))
           if canRestart(row) {
             Button {
               state.requestRestart(row)
             } label: {
-              Label("重启", systemImage: "arrow.clockwise.circle")
+              Label(t("重启", "Restart"), systemImage: "arrow.clockwise.circle")
             }
-            .help("重启该服务")
+            .help(t("重启该服务", "Restart this service"))
           }
           Button {
             state.requestKill(row)
           } label: {
-            Label("结束", systemImage: "stop.circle")
+            Label(t("结束", "Kill"), systemImage: "stop.circle")
           }
-          .help("结束进程")
+          .help(t("结束进程", "Kill process"))
         }
         Button {
           Task { await state.refresh(manual: true) }
@@ -138,10 +139,10 @@ struct ContentView: View {
             ProgressView()
               .controlSize(.small)
           } else {
-            Label("刷新", systemImage: "arrow.clockwise")
+            Label(t("刷新", "Refresh"), systemImage: "arrow.clockwise")
           }
         }
-        .help("刷新")
+        .help(t("刷新", "Refresh"))
       }
     }
     .overlay(alignment: .bottom) {
@@ -158,6 +159,7 @@ struct ContentView: View {
     }
     .animation(.easeOut(duration: 0.2), value: state.toastMessage)
     .modifier(ActionDialogs())
+    .id(lang)   // 语言切换时整树重建，t() 全部重取词
   }
 }
 
@@ -174,9 +176,9 @@ struct SidebarView: View {
           .tag(SidebarSelection.home)
       }
 
-      Section("收藏") {
+      Section(t("收藏", "Favorites")) {
         if state.snapshot.favorites.isEmpty {
-          Text("在列表中右键收藏项目，\n停止后可从这里一键启动。")
+          Text(t("在列表中右键收藏项目，\n停止后可从这里一键启动。", "Right-click a service to favorite it.\nStart stopped favorites from here in one click."))
             .font(.caption)
             .foregroundStyle(.secondary)
         }
@@ -186,7 +188,7 @@ struct SidebarView: View {
           } label: {
             HStack(spacing: 7) {
               StackBadge(tags: favorite.record.tags ?? [])
-              Text(favorite.title.isEmpty ? "未命名" : favorite.title)
+              Text(favorite.title.isEmpty ? t("未命名", "Untitled") : favorite.title)
                 .lineLimit(1)
               Spacer()
               if let port = favorite.running ? favorite.livePort : favorite.record.port {
@@ -203,34 +205,34 @@ struct SidebarView: View {
             }
           }
           .buttonStyle(.plain)
-          .help(favorite.running ? "运行中 · 点击在浏览器打开" : "已停止 · 点击启动\n\(favorite.record.command)")
+          .help(favorite.running ? t("运行中 · 点击在浏览器打开", "Running · click to open in browser") : t("已停止 · 点击启动", "Stopped · click to start") + "\n\(favorite.record.command)")
           .contextMenu {
-            Button("取消收藏") { state.unfavorite(id: favorite.id) }
+            Button(t("取消收藏", "Unfavorite")) { state.unfavorite(id: favorite.id) }
           }
         }
       }
 
-      Section("分类") {
-        sidebarRow(.all, label: "全部", icon: "square.grid.2x2",
+      Section(t("分类", "Categories")) {
+        sidebarRow(.all, label: t("全部", "All"), icon: "square.grid.2x2",
                    count: state.snapshot.ports.count + state.snapshot.agentProcesses.count)
         sidebarRow(.category(.web), label: "Web", icon: "globe", count: state.snapshot.count(of: .web))
         sidebarRow(.category(.agent), label: "Agent", icon: "sparkles", count: state.snapshot.count(of: .agent))
-        sidebarRow(.category(.infra), label: "基础设施", icon: "cylinder.split.1x2", count: state.snapshot.count(of: .infra))
-        sidebarRow(.category(.other), label: "其它", icon: "shippingbox", count: state.snapshot.count(of: .other))
-        sidebarRow(.stopped, label: "已停止", icon: "moon.zzz", count: state.snapshot.stopped.count)
+        sidebarRow(.category(.infra), label: t("基础设施", "Infra"), icon: "cylinder.split.1x2", count: state.snapshot.count(of: .infra))
+        sidebarRow(.category(.other), label: t("其它", "Other"), icon: "shippingbox", count: state.snapshot.count(of: .other))
+        sidebarRow(.stopped, label: t("已停止", "Stopped"), icon: "moon.zzz", count: state.snapshot.stopped.count)
       }
     }
     .listStyle(.sidebar)
     .safeAreaInset(edge: .bottom) {
       VStack(alignment: .leading, spacing: 3) {
         Toggle(isOn: $lanShare) {
-          Label("局域网共享", systemImage: "wifi")
+          Label(t("局域网共享", "LAN Share"), systemImage: "wifi")
             .font(.system(size: 11.5))
         }
         .toggleStyle(.switch)
         .controlSize(.mini)
         if lanShare {
-          Text(lanIPv4().map { "打开链接用 \($0)" } ?? "未找到局域网地址")
+          Text(lanIPv4().map { t("打开链接用 ", "Links use ") + $0 } ?? t("未找到局域网地址", "No LAN address found"))
             .font(.system(size: 9.5, design: .monospaced))
             .foregroundStyle(.secondary)
             .padding(.leading, 2)
@@ -240,7 +242,7 @@ struct SidebarView: View {
       .padding(.vertical, 8)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(.bar)
-      .help("开启后，打开网页用本机局域网 IP，同一网络的手机/电脑也能访问；仅监听 127.0.0.1 的服务仍用 localhost")
+      .help(t("开启后，打开网页用本机局域网 IP，同一网络的手机/电脑也能访问；仅监听 127.0.0.1 的服务仍用 localhost", "When on, links use the Mac's LAN IP so phones and computers on the same network can open them; services bound to 127.0.0.1 keep using localhost"))
     }
   }
 
@@ -338,7 +340,7 @@ struct HomeView: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 26) {
         if !state.snapshot.favorites.isEmpty {
-          section("收藏项目", count: state.snapshot.favorites.count) {
+          section(t("收藏项目", "Favorites"), count: state.snapshot.favorites.count) {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 12)], spacing: 12) {
               ForEach(state.snapshot.favorites) { favorite in
                 FavoriteCard(favorite: favorite)
@@ -347,7 +349,7 @@ struct HomeView: View {
           }
         }
 
-        section("系统") {
+        section(t("系统", "System")) {
           // 自适应网格：等宽等高、铺满整行，不再让卡片挤在左边留白
           LazyVGrid(
             columns: [GridItem(.adaptive(minimum: 148), spacing: 12)],
@@ -360,22 +362,22 @@ struct HomeView: View {
               unit: "%"
             )
             gaugeTile(
-              "内存",
+              t("内存", "Memory"),
               fraction: state.snapshot.system.memUsage,
               value: String(format: "%.1f", Double(state.snapshot.system.memUsedBytes) / 1_073_741_824),
               unit: String(format: "/ %.0f GB", Double(state.snapshot.system.memTotalBytes) / 1_073_741_824)
             )
-            countTile("监听端口", value: state.snapshot.ports.count,
+            countTile(t("监听端口", "Listening"), value: state.snapshot.ports.count,
                       systemImage: "antenna.radiowaves.left.and.right", tint: .green)
-            countTile("HTTP 可访问", value: state.snapshot.httpOkCount,
+            countTile(t("HTTP 可访问", "HTTP OK"), value: state.snapshot.httpOkCount,
                       systemImage: "checkmark.seal", tint: .blue)
-            countTile("已停止", value: state.snapshot.stopped.count,
+            countTile(t("已停止", "Stopped"), value: state.snapshot.stopped.count,
                       systemImage: "moon.zzz", tint: .orange)
           }
         }
 
         if !topCpuRows.isEmpty {
-          section("CPU 占用最高的服务") {
+          section(t("CPU 占用最高的服务", "Top CPU services")) {
             VStack(spacing: 0) {
               ForEach(Array(topCpuRows.enumerated()), id: \.element.id) { index, row in
                 TopCpuRowView(row: row, fraction: row.cpu / maxCpu)
@@ -547,7 +549,7 @@ struct FavoriteCard: View {
       VStack(alignment: .leading, spacing: 8) {
         HStack {
           StackBadge(tags: favorite.record.tags ?? [])
-          Text(favorite.title.isEmpty ? "未命名" : favorite.title)
+          Text(favorite.title.isEmpty ? t("未命名", "Untitled") : favorite.title)
             .font(.system(size: 13, weight: .semibold))
             .lineLimit(1)
           Spacer()
@@ -560,16 +562,16 @@ struct FavoriteCard: View {
         }
         HStack(spacing: 8) {
           if let port = favorite.running ? favorite.livePort : favorite.record.port {
-            Text("端口 \(String(port))")
+            Text(t("端口", "Port") + " \(String(port))")
           }
           if starting {
-            Text("启动中…")
+            Text(t("启动中…", "Starting…"))
           } else if favorite.running {
             if !favorite.liveUptime.isEmpty {
-              Text("已运行 \(favorite.liveUptime)")
+              Text(t("已运行", "Up") + " \(favorite.liveUptime)")
             }
           } else {
-            Text(favorite.deps.isEmpty ? "已停止 · 点击启动" : "已停止 · 点击连带依赖一起启动")
+            Text(favorite.deps.isEmpty ? t("已停止 · 点击启动", "Stopped · click to start") : t("已停止 · 点击连带依赖一起启动", "Stopped · click to start with dependencies"))
           }
           Spacer()
         }
@@ -615,7 +617,7 @@ struct FavoriteCard: View {
         hovering = value
       }
     }
-    .help("点击管理：启动 / 重启 / 关闭")
+    .help(t("点击管理：启动 / 重启 / 关闭", "Click to manage: start / restart / stop"))
     .popover(isPresented: $showActions, arrowEdge: .bottom) {
       // ponytail: 显式传 state —— popover 是断裂 hosting 上下文，
       // 独立 View 用 @EnvironmentObject 会崩（同 PortCardRow）
@@ -623,9 +625,9 @@ struct FavoriteCard: View {
     }
     .contextMenu {
       if let url = favorite.localUrl {
-        Button("在浏览器打开") { NSWorkspace.shared.open(url) }
+        Button(t("在浏览器打开", "Open in browser")) { NSWorkspace.shared.open(url) }
       }
-      Button("取消收藏") { state.unfavorite(id: favorite.id) }
+      Button(t("取消收藏", "Unfavorite")) { state.unfavorite(id: favorite.id) }
     }
   }
 }
@@ -644,7 +646,7 @@ struct FavoriteActionPanel: View {
         if let url = favorite.localUrl { NSWorkspace.shared.open(url) }
         dismiss()
       } label: {
-        Label(favorite.localUrl.map { "打开 \($0.absoluteString)" } ?? "未运行，无法打开",
+        Label(favorite.localUrl.map { t("打开 ", "Open ") + $0.absoluteString } ?? t("未运行，无法打开", "Not running"),
               systemImage: "safari")
           .font(.system(size: 11.5, weight: .medium))
           .lineLimit(1)
@@ -654,13 +656,13 @@ struct FavoriteActionPanel: View {
       .controlSize(.small)
       .disabled(favorite.localUrl == nil)
       HStack(spacing: 8) {
-        bulkButton("启动所有", icon: "play.fill", tint: .green, action: .start)
-        bulkButton("重启所有", icon: "arrow.clockwise", tint: .orange, action: .restart)
-        bulkButton("关闭所有", icon: "stop.fill", tint: .red, action: .stop)
+        bulkButton(t("启动所有", "Start all"), icon: "play.fill", tint: .green, action: .start)
+        bulkButton(t("重启所有", "Restart all"), icon: "arrow.clockwise", tint: .orange, action: .restart)
+        bulkButton(t("关闭所有", "Stop all"), icon: "stop.fill", tint: .red, action: .stop)
       }
       Divider()
       VStack(alignment: .leading, spacing: 2) {
-        serviceRow(label: favorite.title.isEmpty ? "未命名" : favorite.title,
+        serviceRow(label: favorite.title.isEmpty ? t("未命名", "Untitled") : favorite.title,
                    port: favorite.running ? favorite.livePort : favorite.record.port,
                    running: favorite.running, url: favorite.localUrl, dep: nil)
         ForEach(favorite.deps) { dep in
@@ -713,17 +715,17 @@ struct FavoriteActionPanel: View {
       }
       Spacer(minLength: 14)
       if let url {
-        rowIcon("safari", "在浏览器打开") { NSWorkspace.shared.open(url) }
+        rowIcon("safari", t("在浏览器打开", "Open in browser")) { NSWorkspace.shared.open(url) }
       }
-      rowIcon("play.fill", "启动", disabled: running) {
+      rowIcon("play.fill", t("启动", "Start"), disabled: running) {
         state.perform(.start, favorite, dep: dep)
         dismiss()
       }
-      rowIcon("arrow.clockwise", "重启", disabled: !running) {
+      rowIcon("arrow.clockwise", t("重启", "Restart"), disabled: !running) {
         state.perform(.restart, favorite, dep: dep)
         dismiss()
       }
-      rowIcon("stop.fill", "关闭", disabled: !running) {
+      rowIcon("stop.fill", t("关闭", "Stop"), disabled: !running) {
         state.perform(.stop, favorite, dep: dep)
         dismiss()
       }
@@ -769,7 +771,7 @@ func httpPill(_ row: PortRow) -> some View {
       let code = http.statusCode ?? 0
       statusPill(String(code), color: code < 400 ? .green : .orange)
     } else {
-      statusPill("无响应", color: .red)
+      statusPill(t("无响应", "down"), color: .red)
     }
   } else {
     Text("--").font(.system(size: 10.5)).foregroundStyle(.tertiary)
@@ -811,10 +813,10 @@ struct PortsTable: View {
       Image(systemName: "antenna.radiowaves.left.and.right.slash")
         .font(.system(size: 30))
         .foregroundStyle(.tertiary)
-      Text(state.simpleMode ? "没有带标题的网页服务" : "当前筛选下没有服务")
+      Text(state.simpleMode ? t("没有带标题的网页服务", "No titled web services") : t("当前筛选下没有服务", "No services in this filter"))
         .foregroundStyle(.secondary)
       if state.simpleMode {
-        Text("切换到「完整」查看全部端口")
+        Text(t("切换到「完整」查看全部端口", "Switch to \"Full\" to see all ports"))
           .font(.caption)
           .foregroundStyle(.tertiary)
       }
@@ -826,7 +828,7 @@ struct PortsTable: View {
   // 展开（children disclosure）、选中、双击（primaryAction）、右键全走 Table 内置。
   var cardTable: some View {
     Table(state.cardRows, selection: $state.tableSelection) {
-      TableColumn("服务") { (row: PortRow) in
+      TableColumn(t("服务", "Service")) { (row: PortRow) in
         PortCardRow(state: state, row: row)
       }
     }
@@ -839,19 +841,19 @@ struct PortsTable: View {
           favStar(row)
         }
         .width(24)
-        TableColumn("端口") { (row: PortRow) in
+        TableColumn(t("端口", "Port")) { (row: PortRow) in
           portLabel(row)
         }
         .width(min: 56, ideal: 64)
-        TableColumn("进程") { (row: PortRow) in
+        TableColumn(t("进程", "Process")) { (row: PortRow) in
           procLabel(row)
         }
         .width(min: 100, ideal: 140)
-        TableColumn("标题") { (row: PortRow) in
+        TableColumn(t("标题", "Title")) { (row: PortRow) in
           titleWithGroupBadge(row)
         }
         .width(min: 100, ideal: 180)
-        TableColumn("标签") { (row: PortRow) in
+        TableColumn(t("标签", "Tags")) { (row: PortRow) in
           Text(row.tags.joined(separator: " · "))
             .font(.system(size: 10.5))
             .foregroundStyle(.secondary)
@@ -876,11 +878,11 @@ struct PortsTable: View {
           Text(String(format: "%.1f", row.memory)).font(.system(size: 11, design: .monospaced))
         }
         .width(min: 44, ideal: 52)
-        TableColumn("运行") { (row: PortRow) in
+        TableColumn(t("运行", "Uptime")) { (row: PortRow) in
           Text(row.uptime).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
         }
         .width(min: 60, ideal: 74)
-        TableColumn("工作目录") { (row: PortRow) in
+        TableColumn(t("工作目录", "Directory")) { (row: PortRow) in
           Text(row.cwd)
             .font(.system(size: 11, design: .monospaced))
             .foregroundStyle(.secondary)
@@ -889,7 +891,7 @@ struct PortsTable: View {
             .help(row.cwd)
         }
         .width(min: 120, ideal: 220)
-        TableColumn("命令") { (row: PortRow) in
+        TableColumn(t("命令", "Command")) { (row: PortRow) in
           Text(row.command)
             .font(.system(size: 11, design: .monospaced))
             .foregroundStyle(.secondary)
@@ -911,7 +913,7 @@ struct PortsTable: View {
         Text(row.title).font(.system(size: 12.5)).lineLimit(1).help(row.title)
       }
       if let children = row.children, !children.isEmpty {
-        Text("+\(children.count) 关联")
+        Text(t("+\(children.count) 关联", "+\(children.count) linked"))
           .font(.system(size: 9.5, weight: .semibold, design: .rounded))
           .foregroundStyle(.secondary)
           .padding(.horizontal, 5)
@@ -933,7 +935,7 @@ struct PortsTable: View {
             .modifier(StarBounce(trigger: state.isFavorite(row)))
         }
         .buttonStyle(.plain)
-        .help(state.isFavorite(row) ? "取消收藏" : "收藏到侧栏")
+        .help(state.isFavorite(row) ? t("取消收藏", "Unfavorite") : t("收藏到侧栏", "Add to sidebar"))
       }
     }
   }
@@ -948,7 +950,7 @@ struct PortsTable: View {
         .monospacedDigit()
         .foregroundStyle(row.port != nil ? Color.primary : Color.secondary)
     }
-    .help(row.port != nil ? "\(row.address):\(row.port!) · \(row.proto)" : "无监听端口")
+    .help(row.port != nil ? "\(row.address):\(row.port!) · \(row.proto)" : t("无监听端口", "No listening port"))
   }
 
   func procLabel(_ row: PortRow) -> some View {
@@ -1000,7 +1002,7 @@ struct PortCardRow: View {
               .foregroundStyle(.secondary)
           }
           if let children = row.children, !children.isEmpty {
-            Text("+\(children.count) 关联")
+            Text(t("+\(children.count) 关联", "+\(children.count) linked"))
               .font(.system(size: 9.5, weight: .semibold, design: .rounded))
               .foregroundStyle(.secondary)
               .padding(.horizontal, 5)
@@ -1042,7 +1044,7 @@ struct PortCardRow: View {
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .help(state.expandedIds.contains(row.id) ? "收起关联服务" : "展开关联服务")
+      .help(state.expandedIds.contains(row.id) ? t("收起关联服务", "Collapse linked") : t("展开关联服务", "Expand linked"))
     } else if isChild {
       Image(systemName: "arrow.turn.down.right")
         .font(.system(size: 10, weight: .medium))
@@ -1064,7 +1066,7 @@ struct PortCardRow: View {
           .foregroundStyle(state.isFavorite(row) ? .yellow : .secondary)
       }
       .buttonStyle(.plain)
-      .help(state.isFavorite(row) ? "取消收藏" : "收藏到侧栏")
+      .help(state.isFavorite(row) ? t("取消收藏", "Unfavorite") : t("收藏到侧栏", "Add to sidebar"))
     } else {
       Color.clear.frame(width: 11, height: 11)
     }
@@ -1081,22 +1083,22 @@ struct RowMenuItems: View {
 
   var body: some View {
     if let url = row.localUrl {
-      Button("在浏览器打开") { NSWorkspace.shared.open(url) }
-      Button("复制地址") {
+      Button(t("在浏览器打开", "Open in browser")) { NSWorkspace.shared.open(url) }
+      Button(t("复制地址", "Copy URL")) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(url.absoluteString, forType: .string)
       }
     }
-    Button("详细信息") { state.detailTarget = row }
+    Button(t("详细信息", "Details")) { state.detailTarget = row }
     Divider()
     if row.serviceId != nil {
-      Button(state.isFavorite(row) ? "取消收藏" : "收藏到侧栏") { state.toggleFavorite(row) }
+      Button(state.isFavorite(row) ? t("取消收藏", "Unfavorite") : t("收藏到侧栏", "Add to sidebar")) { state.toggleFavorite(row) }
     }
     if canRestart(row) {
-      Button("重启") { state.requestRestart(row) }
+      Button(t("重启", "Restart")) { state.requestRestart(row) }
     }
     Divider()
-    Button("结束进程", role: .destructive) { state.requestKill(row) }
+    Button(t("结束进程", "Kill process"), role: .destructive) { state.requestKill(row) }
   }
 }
 
@@ -1150,24 +1152,24 @@ struct ActionDialogs: ViewModifier {
       .sheet(item: $state.detailTarget) { row in
         DetailSheet(row: row)
       }
-      .alert("结束 PID \(state.killTarget?.pid ?? 0)", isPresented: strongKillBinding) {
-        Button("结束进程树", role: .destructive) { confirmStrongKill() }
-        Button("取消", role: .cancel) { state.killTarget = nil }
+      .alert(t("结束 PID", "Kill PID") + " \(state.killTarget?.pid ?? 0)", isPresented: strongKillBinding) {
+        Button(t("结束进程树", "Kill process tree"), role: .destructive) { confirmStrongKill() }
+        Button(t("取消", "Cancel"), role: .cancel) { state.killTarget = nil }
       } message: {
-        Text("高风险操作：将结束该进程及其全部 \(state.killTarget?.descendantPids.count ?? 0) 个子进程。")
+        Text(t("高风险操作：将结束该进程及其全部 \(state.killTarget?.descendantPids.count ?? 0) 个子进程。", "High risk: this kills the process and all \(state.killTarget?.descendantPids.count ?? 0) of its children."))
       }
-      .confirmationDialog("结束 \(state.killTarget?.name ?? "") (PID \(state.killTarget?.pid ?? 0))?",
+      .confirmationDialog(t("结束", "Kill") + " \(state.killTarget?.name ?? "") (PID \(state.killTarget?.pid ?? 0))?",
                           isPresented: normalKillBinding, titleVisibility: .visible) {
-        Button("温和结束 (SIGTERM)") { performKill(force: false) }
-        Button("强制结束 (SIGKILL)", role: .destructive) { performKill(force: true) }
-        Button("取消", role: .cancel) { state.killTarget = nil }
+        Button(t("温和结束 (SIGTERM)", "Terminate (SIGTERM)")) { performKill(force: false) }
+        Button(t("强制结束 (SIGKILL)", "Force kill (SIGKILL)"), role: .destructive) { performKill(force: true) }
+        Button(t("取消", "Cancel"), role: .cancel) { state.killTarget = nil }
       }
-      .alert("重启 \(state.restartTarget?.name ?? "") (PID \(state.restartTarget?.pid ?? 0))?",
+      .alert(t("重启", "Restart") + " \(state.restartTarget?.name ?? "") (PID \(state.restartTarget?.pid ?? 0))?",
              isPresented: restartBinding) {
-        Button("重启", role: .destructive) { confirmRestart() }
-        Button("取消", role: .cancel) { state.restartTarget = nil }
+        Button(t("重启", "Restart"), role: .destructive) { confirmRestart() }
+        Button(t("取消", "Cancel"), role: .cancel) { state.restartTarget = nil }
       } message: {
-        Text("会先结束该进程及其子进程，再在原目录重新执行原命令。")
+        Text(t("会先结束该进程及其子进程，再在原目录重新执行原命令。", "Kills the process and its children, then re-runs the original command in its directory."))
       }
   }
 
@@ -1198,36 +1200,36 @@ struct StoppedTable: View {
 
   var body: some View {
     Table(state.visibleStopped, selection: $selection) {
-      TableColumn("状态") { _ in
+      TableColumn(t("状态", "Status")) { _ in
         HStack(spacing: 5) {
           Circle().fill(Color.orange).frame(width: 6, height: 6)
-          Text("已停止").font(.system(size: 10.5, weight: .medium)).foregroundStyle(.orange)
+          Text(t("已停止", "Stopped")).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.orange)
         }
       }
       .width(min: 56, ideal: 66)
-      TableColumn("端口") { record in
+      TableColumn(t("端口", "Port")) { record in
         Text(record.port.map(String.init) ?? "--")
           .font(.system(size: 11.5, design: .monospaced))
       }
       .width(min: 50, ideal: 60)
-      TableColumn("进程") { record in
+      TableColumn(t("进程", "Process")) { record in
         HStack(spacing: 6) {
           StackBadge(tags: record.tags ?? [])
           Text(record.name).lineLimit(1)
         }
       }
       .width(min: 100, ideal: 140)
-      TableColumn("标题") { record in
+      TableColumn(t("标题", "Title")) { record in
         Text(record.title ?? "").lineLimit(1)
       }
       .width(min: 120, ideal: 220)
-      TableColumn("最后在线") { record in
+      TableColumn(t("最后在线", "Last seen")) { record in
         Text(formatIso(record.lastSeenAt))
           .font(.system(size: 11, design: .monospaced))
           .foregroundStyle(.secondary)
       }
       .width(min: 110, ideal: 140)
-      TableColumn("工作目录") { record in
+      TableColumn(t("工作目录", "Directory")) { record in
         Text(record.cwd)
           .font(.system(size: 11, design: .monospaced))
           .foregroundStyle(.secondary)
@@ -1236,7 +1238,7 @@ struct StoppedTable: View {
           .help(record.cwd)
       }
       .width(min: 120, ideal: 220)
-      TableColumn("命令") { record in
+      TableColumn(t("命令", "Command")) { record in
         Text(record.command)
           .font(.system(size: 11, design: .monospaced))
           .foregroundStyle(.secondary)
@@ -1247,14 +1249,14 @@ struct StoppedTable: View {
     }
     .contextMenu(forSelectionType: ServiceRecord.ID.self) { ids in
       if let record = recordFor(ids) {
-        Button("启动") { state.startStopped(record) }
-        Button("收藏到侧栏") {
+        Button(t("启动", "Start")) { state.startStopped(record) }
+        Button(t("收藏到侧栏", "Add to sidebar")) {
           Monitor.setFavorite(id: record.id, favorite: true)
-          state.toast("已收藏到侧栏")
+          state.toast(t("已收藏到侧栏", "Added to sidebar"))
           Task { await state.refresh() }
         }
         Divider()
-        Button("移除记录", role: .destructive) { state.forget(record) }
+        Button(t("移除记录", "Remove record"), role: .destructive) { state.forget(record) }
       }
     } primaryAction: { ids in
       if let record = recordFor(ids) {
@@ -1289,28 +1291,28 @@ struct DetailSheet: View {
   var facts: [(String, String)] {
     var list: [(String, String)] = []
     if let port = row.port {
-      list.append(("端口", "\(row.address):\(port) · \(row.proto)"))
-      list.append(("范围", row.scope == "all" ? "全部地址" : row.scope == "loopback" ? "localhost" : "本机地址"))
+      list.append((t("端口", "Port"), "\(row.address):\(port) · \(row.proto)"))
+      list.append((t("范围", "Scope"), row.scope == "all" ? t("全部地址", "all interfaces") : row.scope == "loopback" ? "localhost" : t("本机地址", "host only")))
     }
     list.append(("PID", String(row.pid)))
-    if let parentPid = row.parentPid { list.append(("父 PID", String(parentPid))) }
-    list.append(("进程", row.name))
-    list.append(("用户", row.user))
+    if let parentPid = row.parentPid { list.append((t("父 PID", "Parent PID"), String(parentPid))) }
+    list.append((t("进程", "Process"), row.name))
+    list.append((t("用户", "User"), row.user))
     list.append(("CPU%", String(format: "%.1f", row.cpu)))
     list.append(("MEM%", String(format: "%.1f", row.memory)))
-    if !row.started.isEmpty { list.append(("启动", row.started)) }
-    if !row.uptime.isEmpty { list.append(("运行", row.uptime)) }
+    if !row.started.isEmpty { list.append((t("启动", "Started"), row.started)) }
+    if !row.uptime.isEmpty { list.append((t("运行", "Uptime"), row.uptime)) }
     if !row.descendantPids.isEmpty {
-      list.append(("子进程", "\(row.descendantPids.count) 个: \(row.descendantPids.map(String.init).joined(separator: ", "))"))
+      list.append((t("子进程", "Children"), t("\(row.descendantPids.count) 个: ", "\(row.descendantPids.count): ") + row.descendantPids.map(String.init).joined(separator: ", ")))
     }
     if let http = row.http {
       list.append(("HTTP", "\(http.status)\(http.statusCode.map { " \($0)" } ?? "")"))
-      if let latency = http.latencyMs { list.append(("延迟", "\(latency) ms")) }
-      if !http.title.isEmpty { list.append(("标题", http.title)) }
+      if let latency = http.latencyMs { list.append((t("延迟", "Latency"), "\(latency) ms")) }
+      if !http.title.isEmpty { list.append((t("标题", "Title"), http.title)) }
     }
-    if !row.tags.isEmpty { list.append(("标签", row.tags.joined(separator: ", "))) }
-    if !row.cwd.isEmpty { list.append(("工作目录", row.cwd)) }
-    if !row.command.isEmpty { list.append(("命令", row.command)) }
+    if !row.tags.isEmpty { list.append((t("标签", "Tags"), row.tags.joined(separator: ", "))) }
+    if !row.cwd.isEmpty { list.append((t("工作目录", "Directory"), row.cwd)) }
+    if !row.command.isEmpty { list.append((t("命令", "Command"), row.command)) }
     return list
   }
 
@@ -1318,12 +1320,12 @@ struct DetailSheet: View {
     VStack(alignment: .leading, spacing: 14) {
       HStack {
         VStack(alignment: .leading, spacing: 2) {
-          Text("详细信息").font(.caption).foregroundStyle(.secondary)
-          Text(row.port != nil ? "\(row.name) · 端口 \(row.port!)" : "\(row.name) · PID \(row.pid)")
+          Text(t("详细信息", "Details")).font(.caption).foregroundStyle(.secondary)
+          Text(row.port != nil ? "\(row.name) · " + t("端口", "port") + " \(row.port!)" : "\(row.name) · PID \(row.pid)")
             .font(.system(size: 15, weight: .semibold, design: .monospaced))
         }
         Spacer()
-        Button("关闭") { dismiss() }
+        Button(t("关闭", "Close")) { dismiss() }
           .keyboardShortcut(.cancelAction)
       }
       ScrollView {

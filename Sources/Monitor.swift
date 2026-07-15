@@ -601,7 +601,7 @@ enum Monitor {
           if dep.hasPrefix("docker-port:") {
             let port = Int(dep.dropFirst("docker-port:".count))
             result.append(DepStatus(
-              id: dep, label: "Docker 容器", port: port,
+              id: dep, label: t("Docker 容器", "Docker container"), port: port,
               scope: port.flatMap { p in ports.first { $0.port == p }?.scope } ?? "",
               running: port.map(livePortSet.contains) ?? false))
             continue
@@ -614,7 +614,7 @@ enum Monitor {
           let cwdName = depRecord.map { URL(fileURLWithPath: $0.cwd).lastPathComponent } ?? ""
           result.append(DepStatus(
             id: dep,
-            label: cwdName.isEmpty ? (depRecord?.name ?? "未知服务") : cwdName,
+            label: cwdName.isEmpty ? (depRecord?.name ?? t("未知服务", "unknown service")) : cwdName,
             port: live?.port ?? depRecord?.port,
             scope: live?.scope ?? "",
             running: live != nil))
@@ -746,14 +746,14 @@ enum Monitor {
 
   static func killTree(pid: Int, includeChildren: Bool, force: Bool) async -> ActionResult {
     if pid == Int(ProcessInfo.processInfo.processIdentifier) || pid <= 1 {
-      return ActionResult(ok: false, message: "该进程受保护")
+      return ActionResult(ok: false, message: t("该进程受保护", "This process is protected"))
     }
     let processes = parsePs(await run("/bin/ps", ["-axo", "pid,ppid,user,pcpu,pmem,lstart,comm,args"]))
     guard let target = processes[pid] else {
-      return ActionResult(ok: false, message: "PID \(pid) 不存在")
+      return ActionResult(ok: false, message: t("PID \(pid) 不存在", "PID \(pid) not found"))
     }
     if target.user != NSUserName() {
-      return ActionResult(ok: false, message: "不能结束其他用户的进程")
+      return ActionResult(ok: false, message: t("不能结束其他用户的进程", "Can't kill another user's process"))
     }
 
     var targets = includeChildren ? descendants(of: pid, in: processes).reversed() + [pid] : [pid]
@@ -768,27 +768,27 @@ enum Monitor {
     let after = parsePs(await run("/bin/ps", ["-axo", "pid,ppid,user,pcpu,pmem,lstart,comm,args"]))
     let stillAlive = targets.filter { after[$0] != nil }
     if !failed.isEmpty {
-      return ActionResult(ok: false, message: "部分进程无法结束: \(failed.map(String.init).joined(separator: ", "))")
+      return ActionResult(ok: false, message: t("部分进程无法结束: ", "Some processes couldn't be killed: ") + failed.map(String.init).joined(separator: ", "))
     }
     if !stillAlive.isEmpty {
-      return ActionResult(ok: false, message: "仍在运行: \(stillAlive.map(String.init).joined(separator: ", "))")
+      return ActionResult(ok: false, message: t("仍在运行: ", "Still running: ") + stillAlive.map(String.init).joined(separator: ", "))
     }
-    return ActionResult(ok: true, message: "已结束进程")
+    return ActionResult(ok: true, message: t("已结束进程", "Process killed"))
   }
 
   /* 脱离 app 生命周期启动：sh 派生后台孙进程后立即退出，服务挂到 launchd */
   static func spawnDetached(command: String, cwd: String) -> ActionResult {
     guard FileManager.default.fileExists(atPath: cwd) else {
-      return ActionResult(ok: false, message: "工作目录不存在: \(cwd)")
+      return ActionResult(ok: false, message: t("工作目录不存在: ", "Directory missing: ") + cwd)
     }
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/bin/sh")
     process.arguments = ["-c", "cd \(shellQuote(cwd)) && nohup \(command) >/dev/null 2>&1 &"]
     do {
       try process.run()
-      return ActionResult(ok: true, message: "已发起启动")
+      return ActionResult(ok: true, message: t("已发起启动", "Start requested"))
     } catch {
-      return ActionResult(ok: false, message: "启动失败: \(error.localizedDescription)")
+      return ActionResult(ok: false, message: t("启动失败: ", "Start failed: ") + error.localizedDescription)
     }
   }
 
@@ -798,13 +798,13 @@ enum Monitor {
 
   static func restart(row: PortRow, force: Bool = false) async -> ActionResult {
     guard !row.command.isEmpty, !row.cwd.isEmpty else {
-      return ActionResult(ok: false, message: "拿不到启动命令或工作目录，无法重启")
+      return ActionResult(ok: false, message: t("拿不到启动命令或工作目录，无法重启", "No command or directory recorded; can't restart"))
     }
     let killResult = await killTree(pid: row.pid, includeChildren: true, force: force)
     guard killResult.ok else { return killResult }
     try? await Task.sleep(nanoseconds: 400_000_000)
     let started = spawnDetached(command: row.command, cwd: row.cwd)
-    return started.ok ? ActionResult(ok: true, message: "已重启") : started
+    return started.ok ? ActionResult(ok: true, message: t("已重启", "Restarted")) : started
   }
 
   static func startService(_ record: ServiceRecord) -> ActionResult {
@@ -842,7 +842,7 @@ enum Monitor {
         } else if let depRecord = records[dep], !runningIds.contains(dep) {
           startDeps(of: depRecord)   // 先起更深层的依赖（db 先于后端）
           if spawnDetached(command: depRecord.command, cwd: depRecord.cwd).ok {
-            startedDeps.append(depRecord.name.isEmpty ? "端口 \(depRecord.port ?? 0)" : depRecord.name)
+            startedDeps.append(depRecord.name.isEmpty ? t("端口", "port") + " \(depRecord.port ?? 0)" : depRecord.name)
           }
         }
       }
