@@ -323,18 +323,28 @@ func cleanSubtitle(_ row: PortRow) -> String {
 
 struct HomeView: View {
   @EnvironmentObject var state: AppState
+  // 行上的操作面板打开期间冻结排行：选中的行不随刷新消失/跳位，关闭后恢复实时
+  @State private var pinnedTopCpu: [PortRow]?
 
-  var topCpuRows: [PortRow] {
+  var topCpuRows: [PortRow] { pinnedTopCpu ?? liveTopCpuRows }
+
+  var liveTopCpuRows: [PortRow] {
     var pool = state.snapshot.ports + state.snapshot.agentProcesses
     // 跟随简单/完整模式：简单模式只看有标题的项目服务
     if state.simpleMode {
       pool = pool.filter { !$0.title.isEmpty }
     }
-    return Array(pool.sorted { $0.cpu > $1.cpu }.prefix(5)).filter { $0.cpu > 0.05 }
+    // 按进程树聚合排行：同 pid 多端口只留一行；
+    // 已被别的行进程树包含的（uvicorn reload 子进程也监听同端口）不再单独上榜
+    var seenPids = Set<Int>()
+    pool = pool.filter { seenPids.insert($0.pid).inserted }
+    let covered = Set(pool.flatMap(\.descendantPids))
+    pool = pool.filter { !covered.contains($0.pid) }
+    return Array(pool.sorted { $0.treeCpu > $1.treeCpu }.prefix(5)).filter { $0.treeCpu > 0.05 }
   }
 
-  /// 列表里最高的 CPU 值，用作强度条的满格基准
-  var maxCpu: Double { max(topCpuRows.first?.cpu ?? 0, 0.1) }
+  /// 列表里最高的进程树 CPU 总和，用作强度条的满格基准
+  var maxCpu: Double { max(topCpuRows.first?.treeCpu ?? 0, 0.1) }
 
   var body: some View {
     ScrollView {
@@ -380,7 +390,9 @@ struct HomeView: View {
           section(t("CPU 占用最高的服务", "Top CPU services")) {
             VStack(spacing: 0) {
               ForEach(Array(topCpuRows.enumerated()), id: \.element.id) { index, row in
-                TopCpuRowView(row: row, fraction: row.cpu / maxCpu)
+                TopCpuRowView(row: row, fraction: row.treeCpu / maxCpu) { pinning in
+                  pinnedTopCpu = pinning ? topCpuRows : nil
+                }
                 if index != topCpuRows.count - 1 {
                   Divider().padding(.leading, 40)
                 }
@@ -484,49 +496,114 @@ struct HomeView: View {
 struct TopCpuRowView: View {
   @EnvironmentObject var state: AppState
   let row: PortRow
-  let fraction: Double   // 相对列表最高 CPU 的比例，决定强度条长度
+  let fraction: Double   // 相对列表最高进程树 CPU 的比例，决定强度条长度
+  var onPin: (Bool) -> Void = { _ in }   // 面板开/关时通知父级冻结/恢复排行
+  @State private var showActions = false
 
   var tint: Color {
-    row.cpu > 50 ? .red : row.cpu > 15 ? .orange : .accentColor
+    row.treeCpu > 50 ? .red : row.treeCpu > 15 ? .orange : .accentColor
   }
 
+  /// 该行所属的收藏项目组：自己是收藏本体，或是收藏学到的依赖成员
+  var matchedFavorite: FavoriteItem? {
+    state.snapshot.favorites.first { favorite in
+      (row.serviceId != nil && favorite.record.id == row.serviceId)
+        || (row.port != nil && favorite.running && favorite.livePort == row.port)
+        || (row.port != nil && favorite.deps.contains { $0.port == row.port })
+    }
+  }
+
+  /// 树明细：自身 + 活跃子孙（按 CPU 降序）；空闲的（<0.05%）只报数量
+  var activeProcs: [TreeProc] {
+    ([TreeProc(pid: row.pid, name: row.name, cpu: row.cpu)] + row.treeProcs)
+      .filter { $0.cpu > 0.05 }
+      .sorted { $0.cpu > $1.cpu }
+  }
+  var idleCount: Int { 1 + row.treeProcs.count - activeProcs.count }
+
   var body: some View {
-    HStack(spacing: 10) {
-      StackBadge(tags: row.tags)
-      VStack(alignment: .leading, spacing: 1) {
-        Text(row.name)
-          .font(.system(size: 12.5, weight: .medium))
-          .lineLimit(1)
-        Text(cleanSubtitle(row))
-          .font(.system(size: 10.5))
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
-      }
-      Spacer(minLength: 12)
-      if let port = row.port {
-        Text(String(port))
-          .font(.system(size: 10.5, design: .monospaced))
-          .foregroundStyle(.tertiary)
-      }
-      // 强度条：条长按相对最高占用，颜色按绝对占用（低占用保持平静）
-      ZStack(alignment: .leading) {
-        Capsule().fill(.quaternary)
-        GeometryReader { geo in
-          Capsule()
-            .fill(tint.gradient)
-            .frame(width: max(3, geo.size.width * min(1, fraction)))
+    VStack(spacing: 0) {
+      HStack(spacing: 10) {
+        StackBadge(tags: row.tags)
+        VStack(alignment: .leading, spacing: 1) {
+          Text(row.name)
+            .font(.system(size: 12.5, weight: .medium))
+            .lineLimit(1)
+          Text(cleanSubtitle(row))
+            .font(.system(size: 10.5))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
         }
+        Spacer(minLength: 12)
+        if let port = row.port {
+          Text(String(port))
+            .font(.system(size: 10.5, design: .monospaced))
+            .foregroundStyle(.tertiary)
+        }
+        // 强度条：条长按相对最高占用，颜色按绝对占用（低占用保持平静）
+        ZStack(alignment: .leading) {
+          Capsule().fill(.quaternary)
+          GeometryReader { geo in
+            Capsule()
+              .fill(tint.gradient)
+              .frame(width: max(3, geo.size.width * min(1, fraction)))
+          }
+        }
+        .frame(width: 60, height: 5)
+        Text(String(format: "%.1f%%", row.treeCpu))
+          .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+          .monospacedDigit()
+          .frame(width: 46, alignment: .trailing)
       }
-      .frame(width: 60, height: 5)
-      Text(String(format: "%.1f%%", row.cpu))
-        .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-        .monospacedDigit()
-        .frame(width: 46, alignment: .trailing)
+      // 进程树明细：多进程服务列出每个成员的占用，右侧总和与上面的总占用对得上
+      if !row.treeProcs.isEmpty {
+        VStack(spacing: 2) {
+          ForEach(activeProcs) { proc in
+            HStack(spacing: 6) {
+              Text(proc.name)
+                .lineLimit(1)
+              Text(String(proc.pid))
+                .foregroundStyle(.tertiary)
+              Spacer(minLength: 8)
+              Text(String(format: "%.1f%%", proc.cpu))
+                .monospacedDigit()
+                .frame(width: 46, alignment: .trailing)
+            }
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(.secondary)
+          }
+          if idleCount > 0 {
+            HStack {
+              Text(t("+ \(idleCount) 个空闲进程", "+ \(idleCount) idle processes"))
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+              Spacer()
+            }
+          }
+        }
+        .padding(.leading, 40)
+        .padding(.top, 5)
+      }
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 8)
     .contentShape(Rectangle())
-    .onTapGesture { state.detailTarget = row }
+    .onTapGesture {
+      // 属于某个收藏项目组的行 → 弹和收藏卡片同款的操作面板；其余走详情
+      if matchedFavorite != nil {
+        showActions = true
+      } else {
+        state.detailTarget = row
+      }
+    }
+    .popover(isPresented: $showActions, arrowEdge: .bottom) {
+      // ponytail: 显式传 state —— popover 是断裂 hosting 上下文，
+      // 独立 View 用 @EnvironmentObject 会崩（同 FavoriteCard）
+      if let favorite = matchedFavorite {
+        FavoriteActionPanel(state: state, favorite: favorite)
+      }
+    }
+    .onChange(of: showActions) { _, open in onPin(open) }
     .contextMenu {
       RowMenuItems(state: state, row: row)
     }

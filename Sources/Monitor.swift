@@ -163,6 +163,12 @@ enum Monitor {
     return result
   }
 
+  static func treeProcs(of pids: [Int], in processes: [Int: ProcInfo]) -> [TreeProc] {
+    pids.compactMap { pid in
+      processes[pid].map { TreeProc(pid: pid, name: $0.name, cpu: $0.cpu) }
+    }
+  }
+
   // MARK: - lsof 解析
 
   struct LsofRow {
@@ -431,6 +437,7 @@ enum Monitor {
         row.started = info.started
         row.startedAt = info.startedAt
         row.descendantPids = descendants(of: lsofRow.pid, in: processes)
+        row.treeProcs = treeProcs(of: row.descendantPids, in: processes)
       } else {
         row.name = lsofRow.processName
         row.command = lsofRow.processName
@@ -455,6 +462,7 @@ enum Monitor {
       row.started = info.started
       row.startedAt = info.startedAt
       row.descendantPids = descendants(of: pid, in: processes)
+      row.treeProcs = treeProcs(of: row.descendantPids, in: processes)
       row.category = category
       row.tags = tags
       row.highRisk = highRisk

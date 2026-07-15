@@ -49,6 +49,15 @@ struct ProbeResult: Hashable {
   var title: String = ""
 }
 
+/* 进程树成员（CPU 排行明细用）：pid + 名字 + 自身 CPU */
+struct TreeProc: Hashable, Identifiable {
+  var pid: Int
+  var name: String
+  var cpu: Double
+
+  var id: Int { pid }
+}
+
 struct PortRow: Identifiable, Hashable {
   var children: [PortRow]?   // 同组（同项目/同进程树）的关联服务
   var port: Int?             // nil = 无监听端口的相关进程（agent）
@@ -67,6 +76,7 @@ struct PortRow: Identifiable, Hashable {
   var cwd: String = ""
   var projectRoot: String = ""   // 最近的含 .git 的祖先目录，空 = 不在项目里
   var descendantPids: [Int] = []
+  var treeProcs: [TreeProc] = []   // 所有子孙进程的明细（不含自身）
   var category: Category = .other
   var tags: [String] = []
   var highRisk: Bool = false
@@ -75,6 +85,9 @@ struct PortRow: Identifiable, Hashable {
   var id: String { "\(pid):\(address):\(port ?? 0)" }
 
   var title: String { http?.title ?? "" }
+
+  /// 整棵进程树（自身 + 所有子孙）的 CPU 总和
+  var treeCpu: Double { treeProcs.reduce(cpu) { $0 + $1.cpu } }
 
   var localUrl: URL? {
     guard let port else { return nil }
