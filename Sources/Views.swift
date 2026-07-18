@@ -1,3 +1,4 @@
+import Charts
 import SwiftUI
 
 // MARK: - 技术栈徽标（品牌色圆角块 + 缩写）
@@ -52,101 +53,30 @@ struct StackBadge: View {
   }
 }
 
-// MARK: - 窗口可见性（驱动“看不见就停动画”）
+/* 窗口可见性注入（windowVisible environment + trackWindowVisibility）已随
+   呼吸动画一起移除：常驻动画不复存在，没有消费者。若将来重新加常驻动画，
+   必须一并恢复按可见性摘除动画视图的机制（不可见时动画持续烧 CPU，实测 30%/14% 底噪）。
 
-/// 宿主 NSWindow 是否真的在屏上（occlusionState）。
-/// MenuBarExtra 面板窗口从启动就常驻不销毁，repeatForever/TimelineView 都会在
-/// 不可见时继续烧 CPU（实测 30%/14% 底噪），必须显式按可见性摘掉动画视图。
-private struct WindowVisibleKey: EnvironmentKey { static let defaultValue = true }
-
-extension EnvironmentValues {
-  var windowVisible: Bool {
-    get { self[WindowVisibleKey.self] }
-    set { self[WindowVisibleKey.self] = newValue }
-  }
-}
-
-private struct WindowVisibleReader: NSViewRepresentable {
-  @Binding var visible: Bool
-
-  func makeNSView(context: Context) -> TrackerView { TrackerView(binding: $visible) }
-  func updateNSView(_ view: TrackerView, context: Context) {}
-
-  final class TrackerView: NSView {
-    let binding: Binding<Bool>
-    private var observer: NSObjectProtocol?
-
-    init(binding: Binding<Bool>) {
-      self.binding = binding
-      super.init(frame: .zero)
-    }
-    required init?(coder: NSCoder) { nil }
-
-    override func viewDidMoveToWindow() {
-      super.viewDidMoveToWindow()
-      if let observer { NotificationCenter.default.removeObserver(observer) }
-      observer = nil
-      if let window {
-        observer = NotificationCenter.default.addObserver(
-          forName: NSWindow.didChangeOcclusionStateNotification,
-          object: window, queue: .main) { [weak self] _ in self?.push()
-        }
-      }
-      push()
-    }
-
-    private func push() {
-      let value = window.map { $0.isVisible && $0.occlusionState.contains(.visible) } ?? false
-      // 避免在视图更新周期内改 state
-      DispatchQueue.main.async { [binding] in
-        if binding.wrappedValue != value { binding.wrappedValue = value }
-      }
-    }
-
-    deinit {
-      if let observer { NotificationCenter.default.removeObserver(observer) }
-    }
-  }
-}
-
-extension View {
-  /// 挂在窗口根视图上，把真实可见性注入 environment（StatusDot 等动画按它启停）
-  func trackWindowVisibility() -> some View {
-    modifier(TrackWindowVisibility())
-  }
-}
-
-private struct TrackWindowVisibility: ViewModifier {
-  @State private var visible = true
-
-  func body(content: Content) -> some View {
-    content
-      .environment(\.windowVisible, visible)
-      .background(WindowVisibleReader(visible: $visible))
-  }
-}
+   滚动检测统一走 AppState 里的 NSEvent 滚轮监听（app 级，全窗口覆盖）。
+   视图级方案都被否掉了：NSViewRepresentable 会弄丢工具栏安全区内边距
+   （内容顶端永远滚不出来），GeometryReader 偏移量 preference 实测漏报。 */
 
 // MARK: - 运行状态点（运行中带呼吸脉冲）
 
 struct StatusDot: View {
   let running: Bool
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @Environment(\.windowVisible) private var windowVisible
 
+  // 静态光环，不再用 TimelineView 呼吸动画：30fps 的常驻动画会把 ProMotion
+  // 窗口的刷新率投票压到 30~40Hz，整个窗口滚动跟着只有 30 帧
   var body: some View {
     Circle()
       .fill(running ? Color.green : Color.secondary.opacity(0.4))
       .frame(width: 7, height: 7)
       .background {
-        if running && !reduceMotion && windowVisible {
-          TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
-            let phase = context.date.timeIntervalSinceReferenceDate
-              .truncatingRemainder(dividingBy: 1.8) / 1.8
-            Circle()
-              .stroke(Color.green.opacity(0.5), lineWidth: 2)
-              .scaleEffect(1 + 1.4 * phase)
-              .opacity(0.8 * (1 - phase))
-          }
+        if running {
+          Circle()
+            .stroke(Color.green.opacity(0.35), lineWidth: 1.5)
+            .scaleEffect(1.7)
         }
       }
   }
@@ -215,22 +145,27 @@ struct ContentView: View {
             Label(t("刷新", "Refresh"), systemImage: "arrow.clockwise")
           }
         }
-        .help(t("刷新", "Refresh"))
+        .keyboardShortcut("r", modifiers: .command)
+        .help(t("刷新 (⌘R)", "Refresh (⌘R)"))
       }
     }
     .overlay(alignment: .bottom) {
-      if let message = state.toastMessage {
-        Text(message)
-          .font(.callout)
-          .padding(.horizontal, 14)
-          .padding(.vertical, 8)
-          .background(.regularMaterial, in: Capsule())
-          .shadow(radius: 8, y: 2)
-          .padding(.bottom, 16)
-          .transition(.move(edge: .bottom).combined(with: .opacity))
+      // 动画只作用于 toast 自身。原来 .animation(value:) 挂在整棵树上，
+      // 每次 toast 出现/消失都对全界面做动画遍历，撞上快照刷新时全表乱动、操作掉帧
+      ZStack {
+        if let message = state.toastMessage {
+          Text(message)
+            .font(.callout)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(.regularMaterial, in: Capsule())
+            .shadow(radius: 8, y: 2)
+            .padding(.bottom, 16)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
       }
+      .animation(.easeOut(duration: 0.2), value: state.toastMessage)
     }
-    .animation(.easeOut(duration: 0.2), value: state.toastMessage)
     .modifier(ActionDialogs())
     .id(lang)   // 语言切换时整树重建，t() 全部重取词
   }
@@ -238,9 +173,19 @@ struct ContentView: View {
 
 // MARK: - 侧栏
 
+/// 收藏行的实时位置上报：自绘拖拽排序靠指针落在哪行的 frame 判定目标槽位
+private struct FavRowFramesKey: PreferenceKey {
+  static var defaultValue: [String: CGRect] = [:]
+  static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+    value.merge(nextValue()) { $1 }
+  }
+}
+
 struct SidebarView: View {
   @EnvironmentObject var state: AppState
   @AppStorage(lanShareKey) private var lanShare = false
+  @State private var rowFrames: [String: CGRect] = [:]
+  @State private var draggingFavorite: String?
 
   var body: some View {
     List(selection: $state.selection) {
@@ -255,33 +200,16 @@ struct SidebarView: View {
             .font(.caption)
             .foregroundStyle(.secondary)
         }
+        // 系统 List.onMove 是 AppKit 拖放会话，行上任何 SwiftUI 手势（tap/simultaneous）
+        // 都会抢走 mouseDown 让文字区拖不动（2026-07-17/18 三次用户实测）。
+        // 改为自绘拖拽：DragGesture 驱动 + 行 frame 上报判定悬停槽位，tap 与其共存已在菜单栏行实证
         ForEach(state.snapshot.favorites) { favorite in
-          Button {
-            state.openFavorite(favorite)
-          } label: {
-            HStack(spacing: 7) {
-              StackBadge(tags: favorite.record.tags ?? [])
-              Text(favorite.title.isEmpty ? t("未命名", "Untitled") : favorite.title)
-                .lineLimit(1)
-              Spacer()
-              if let port = favorite.running ? favorite.livePort : favorite.record.port {
-                Text(String(port))
-                  .font(.system(size: 10, design: .monospaced))
-                  .foregroundStyle(.secondary)
-              }
-              if state.startingIds.contains(favorite.id) {
-                ProgressView()
-                  .controlSize(.mini)
-              } else {
-                StatusDot(running: favorite.running)
-              }
-            }
-          }
-          .buttonStyle(.plain)
-          .help(favorite.running ? t("运行中 · 点击在浏览器打开", "Running · click to open in browser") : t("已停止 · 点击启动", "Stopped · click to start") + "\n\(favorite.record.command)")
-          .contextMenu {
-            Button(t("取消收藏", "Unfavorite")) { state.unfavorite(id: favorite.id) }
-          }
+          SidebarFavoriteRow(state: state, favorite: favorite)
+            .opacity(draggingFavorite == favorite.id ? 0.55 : 1)
+            .background(GeometryReader { geo in
+              Color.clear.preference(key: FavRowFramesKey.self, value: [favorite.id: geo.frame(in: .global)])
+            })
+            .gesture(favoriteDrag(favorite))
         }
       }
 
@@ -293,9 +221,13 @@ struct SidebarView: View {
         sidebarRow(.category(.infra), label: t("基础设施", "Infra"), icon: "cylinder.split.1x2", count: state.snapshot.count(of: .infra))
         sidebarRow(.category(.other), label: t("其它", "Other"), icon: "shippingbox", count: state.snapshot.count(of: .other))
         sidebarRow(.stopped, label: t("已停止", "Stopped"), icon: "moon.zzz", count: state.snapshot.stopped.count)
+        if !state.ignoredKeys.isEmpty {
+          sidebarRow(.ignored, label: t("已忽略", "Ignored"), icon: "eye.slash", count: state.ignoredLiveCount)
+        }
       }
     }
     .listStyle(.sidebar)
+    .onPreferenceChange(FavRowFramesKey.self) { rowFrames = $0 }
     .safeAreaInset(edge: .bottom) {
       VStack(alignment: .leading, spacing: 3) {
         Toggle(isOn: $lanShare) {
@@ -319,6 +251,21 @@ struct SidebarView: View {
     }
   }
 
+  private func favoriteDrag(_ favorite: FavoriteItem) -> some Gesture {
+    DragGesture(minimumDistance: 5, coordinateSpace: .global)
+      .onChanged { value in
+        draggingFavorite = favorite.id
+        guard let target = rowFrames.first(where: {
+          $0.key != favorite.id && $0.value.minY <= value.location.y && value.location.y < $0.value.maxY
+        })?.key else { return }
+        state.reorderFavorite(dragged: favorite.id, over: target)
+      }
+      .onEnded { _ in
+        draggingFavorite = nil
+        state.commitFavoriteOrder()
+      }
+  }
+
   func sidebarRow(_ value: SidebarSelection, label: String, icon: String, count: Int) -> some View {
     Label {
       HStack {
@@ -327,12 +274,79 @@ struct SidebarView: View {
         Text(String(count))
           .font(.system(size: 10.5, design: .monospaced))
           .foregroundStyle(.secondary)
-          .contentTransition(.numericText())
       }
     } icon: {
       Image(systemName: icon)
     }
     .tag(value)
+  }
+}
+
+/// 侧栏收藏行：点击弹出与 Home 卡片同款的操作面板（启动/重启/关闭/详情），
+/// 不再是「点了就开浏览器/启动」——那套快捷路径保留在菜单栏行的整行点击上
+struct SidebarFavoriteRow: View {
+  // ponytail: 显式传 state —— popover 是断裂 hosting 上下文（同 FavoriteCard）
+  @ObservedObject var state: AppState
+  let favorite: FavoriteItem
+  @State private var showActions = false
+
+  var body: some View {
+    // 不用 Button 包整行：macOS 上按钮的 mouse tracking 会吞掉拖拽起始事件，
+    // List 的 .onMove 拖拽排序收不到；.onTapGesture 独占热区，把可拖区域挤到
+    // 只剩行内边距几像素（均 2026-07-17 用户实测失效）。
+    // 整行点击出面板用 simultaneousGesture：与 List 拖拽并行识别不抢热区，
+    // 指针位移超阈值时 tap 自动失败让位给拖拽
+    HStack(spacing: 7) {
+      StackBadge(tags: favorite.record.tags ?? [])
+      Text(favorite.title.isEmpty ? t("未命名", "Untitled") : favorite.title)
+        .lineLimit(1)
+      Spacer()
+      if let port = favorite.running ? favorite.livePort : favorite.record.port {
+        Text(String(port))
+          .font(.system(size: 10, design: .monospaced))
+          .foregroundStyle(.secondary)
+      }
+      if state.startingIds.contains(favorite.id) {
+        ProgressView()
+          .controlSize(.mini)
+      } else {
+        StatusDot(running: favorite.running)
+      }
+      // 面板入口收进这个按钮：行身上不挂任何点按手势。onTapGesture 会独占整行热区、
+      // 把 List 拖拽排序挤到只剩行内边距几像素（2026-07-17 用户实测「可拖区域太小」），
+      // 行体零手势后整行都是拖拽区（无手势区域可拖已被用户成功拖拽实证）
+      Button {
+        showActions = true
+      } label: {
+        Image(systemName: "ellipsis.circle")
+          .font(.system(size: 11))
+          .foregroundStyle(.secondary)
+      }
+      .buttonStyle(.borderless)
+      .help(t("管理：启动 / 重启 / 关闭 / 详情", "Manage: start / restart / stop / details"))
+    }
+    .contentShape(Rectangle())
+    .onTapGesture { showActions = true }
+    .help(t("点击管理 · 拖拽排序", "Click to manage · drag to reorder") + "\n\(favorite.record.command)")
+    .popover(isPresented: $showActions, arrowEdge: .trailing) {
+      FavoriteActionPanel(state: state, favorite: favorite)
+    }
+    .contextMenu {
+      if let url = favorite.localUrl {
+        Button(t("在浏览器打开", "Open in browser")) { NSWorkspace.shared.open(url) }
+      }
+      if favorite.running {
+        Button(t("详细信息", "Details")) { state.showDetails(favoritePort: favorite.livePort) }
+        Divider()
+        Button(t("重启所有", "Restart all")) { state.performAll(.restart, favorite) }
+        Button(t("关闭所有", "Stop all")) { state.performAll(.stop, favorite) }
+      } else {
+        Divider()
+        Button(t("启动（含依赖）", "Start (with deps)")) { state.performAll(.start, favorite) }
+      }
+      Divider()
+      Button(t("取消收藏", "Unfavorite")) { state.unfavorite(id: favorite.id) }
+    }
   }
 }
 
@@ -343,34 +357,90 @@ struct MainView: View {
 
   var body: some View {
     ZStack {
-      switch state.selection {
-      case .home:
-        HomeView()
+      if let target = state.detailTarget {
+        DetailPage(initialRow: target)
+          .id(target.pid)   // 换目标时重建，滚动位置/图表选择不残留
           .transition(.opacity)
-      case .stopped:
-        StoppedTable()
-          .transition(.opacity)
-      default:
-        PortsTable()
-          .transition(.opacity)
+      } else {
+        switch state.selection {
+        case .home:
+          HomeView()
+            .transition(.opacity)
+        case .stopped:
+          StoppedTable()
+            .transition(.opacity)
+        default:
+          PortsTable()
+            .transition(.opacity)
+        }
       }
     }
     .animation(.easeOut(duration: 0.18), value: state.selection)
+    .animation(.easeOut(duration: 0.18), value: state.detailTarget == nil)
+    .onChange(of: state.selection) { _, _ in state.detailTarget = nil }   // 点侧栏 = 离开详情页
   }
 }
 
 // MARK: - Home
 
-/// 统一卡片表面：抬起的控件底色 + 极细描边 + 轻阴影，hover 时加强。
+/* 非惰性自适应网格。LazyVGrid 在滚动途中内容更新时会丢渲染——5 张收藏卡
+   只画出 1 张、内容高度塌缩、顶部“滚不上去”（2026-07-16 真机截图实锤）。
+   首页内容量级很小，直接全量布局：等宽列、列数按最小列宽自适应。 */
+struct AdaptiveGrid: Layout {
+  var minWidth: CGFloat
+  var spacing: CGFloat = 12
+
+  private func columns(for width: CGFloat) -> Int {
+    max(1, Int((width + spacing) / (minWidth + spacing)))
+  }
+
+  private func rowHeights(_ subviews: Subviews, cols: Int, cellWidth: CGFloat) -> [CGFloat] {
+    stride(from: 0, to: subviews.count, by: cols).map { start in
+      subviews[start..<min(start + cols, subviews.count)]
+        .map { $0.sizeThatFits(ProposedViewSize(width: cellWidth, height: nil)).height }
+        .max() ?? 0
+    }
+  }
+
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    let width = proposal.width ?? minWidth
+    let cols = columns(for: width)
+    let cellWidth = (width - spacing * CGFloat(cols - 1)) / CGFloat(cols)
+    let heights = rowHeights(subviews, cols: cols, cellWidth: cellWidth)
+    let total = heights.reduce(0, +) + spacing * CGFloat(max(0, heights.count - 1))
+    return CGSize(width: width, height: total)
+  }
+
+  func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    let cols = columns(for: bounds.width)
+    let cellWidth = (bounds.width - spacing * CGFloat(cols - 1)) / CGFloat(cols)
+    var y = bounds.minY
+    for start in stride(from: 0, to: subviews.count, by: cols) {
+      let row = subviews[start..<min(start + cols, subviews.count)]
+      let height = row
+        .map { $0.sizeThatFits(ProposedViewSize(width: cellWidth, height: nil)).height }
+        .max() ?? 0
+      for (column, view) in row.enumerated() {
+        view.place(
+          at: CGPoint(x: bounds.minX + CGFloat(column) * (cellWidth + spacing), y: y),
+          proposal: ProposedViewSize(width: cellWidth, height: height))
+      }
+      y += height + spacing
+    }
+  }
+}
+
+/// 统一卡片表面：抬起的控件底色 + 极细描边 + 轻阴影，hover 时描边加强。
+/// hover 只改描边不改阴影——阴影半径变化要整卡重新模糊，单次翻转实测 112~125ms
 extension View {
   func cardSurface(cornerRadius: CGFloat = 12, elevated: Bool = false) -> some View {
     self
       .background(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         .fill(Color(nsColor: .controlBackgroundColor)))
       .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        .strokeBorder(Color.primary.opacity(elevated ? 0.12 : 0.06), lineWidth: 1))
-      .shadow(color: .black.opacity(elevated ? 0.10 : 0.045),
-              radius: elevated ? 8 : 2.5, y: elevated ? 3 : 1)
+        .strokeBorder(Color.primary.opacity(elevated ? 0.18 : 0.08), lineWidth: 1))
+      // 不加 .shadow：高斯模糊阴影让 Home 图层树走不了并发滚动快速路径，
+      // 每帧都要主线程同步绘制，整页滚动只有 30 帧（2026-07-16 A/B 实测定罪）
   }
 }
 
@@ -403,6 +473,7 @@ struct HomeView: View {
 
   var liveTopCpuRows: [PortRow] {
     var pool = state.snapshot.ports + state.snapshot.agentProcesses
+    pool = pool.filter { !state.isIgnored($0) }
     // 跟随简单/完整模式：简单模式只看有标题的项目服务
     if state.simpleMode {
       pool = pool.filter { !$0.title.isEmpty }
@@ -424,7 +495,7 @@ struct HomeView: View {
       VStack(alignment: .leading, spacing: 26) {
         if !state.snapshot.favorites.isEmpty {
           section(t("收藏项目", "Favorites"), count: state.snapshot.favorites.count) {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 12)], spacing: 12) {
+            AdaptiveGrid(minWidth: 220) {
               ForEach(state.snapshot.favorites) { favorite in
                 FavoriteCard(favorite: favorite)
               }
@@ -434,10 +505,7 @@ struct HomeView: View {
 
         section(t("系统", "System")) {
           // 自适应网格：等宽等高、铺满整行，不再让卡片挤在左边留白
-          LazyVGrid(
-            columns: [GridItem(.adaptive(minimum: 148), spacing: 12)],
-            alignment: .leading, spacing: 12
-          ) {
+          AdaptiveGrid(minWidth: 148) {
             gaugeTile(
               "CPU",
               fraction: state.snapshot.system.cpuUsage,
@@ -516,13 +584,14 @@ struct HomeView: View {
           .font(.system(size: 11, weight: .medium))
           .foregroundStyle(.secondary)
         Spacer()
+        // 不给每 3 秒必变的数据挂动画：numericText/圆环动画每轮刷新都拖出
+        // 几百 ms 的全窗口布局尾巴，是操作期 50~70ms 卡帧的实测来源
         ZStack {
           Circle().stroke(.quaternary, lineWidth: 3)
           Circle()
             .trim(from: 0, to: f)
             .stroke(tint.gradient, style: StrokeStyle(lineWidth: 3, lineCap: .round))
             .rotationEffect(.degrees(-90))
-            .animation(.easeOut(duration: 0.4), value: f)
         }
         .frame(width: 18, height: 18)
       }
@@ -530,7 +599,6 @@ struct HomeView: View {
       HStack(alignment: .firstTextBaseline, spacing: 3) {
         Text(value)
           .font(.system(size: 23, weight: .semibold, design: .rounded))
-          .contentTransition(.numericText())
         Text(unit)
           .font(.system(size: 11, weight: .medium))
           .foregroundStyle(.secondary)
@@ -556,7 +624,6 @@ struct HomeView: View {
       Spacer(minLength: 8)
       Text(String(value))
         .font(.system(size: 23, weight: .semibold, design: .rounded))
-        .contentTransition(.numericText())
         .foregroundStyle(value == 0 ? Color.secondary : Color.primary)
     }
     .padding(12)
@@ -613,14 +680,13 @@ struct TopCpuRowView: View {
             .font(.system(size: 10.5, design: .monospaced))
             .foregroundStyle(.tertiary)
         }
-        // 强度条：条长按相对最高占用，颜色按绝对占用（低占用保持平静）
+        // 强度条：条长按相对最高占用，颜色按绝对占用（低占用保持平静）。
+        // 总宽固定 60pt，直接算宽度，不用 GeometryReader（每轮刷新都触发布局）
         ZStack(alignment: .leading) {
           Capsule().fill(.quaternary)
-          GeometryReader { geo in
-            Capsule()
-              .fill(tint.gradient)
-              .frame(width: max(3, geo.size.width * min(1, fraction)))
-          }
+          Capsule()
+            .fill(tint.gradient)
+            .frame(width: max(3, 60 * min(1, fraction)))
         }
         .frame(width: 60, height: 5)
         Text(String(format: "%.1f%%", row.treeCpu))
@@ -688,7 +754,6 @@ struct FavoriteCard: View {
   let favorite: FavoriteItem
   @State private var hovering = false
   @State private var showActions = false
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var starting: Bool { state.startingIds.contains(favorite.id) }
 
@@ -758,14 +823,14 @@ struct FavoriteCard: View {
       .padding(12)
       .frame(maxWidth: .infinity, alignment: .leading)
       .cardSurface(elevated: hovering)
-      .scaleEffect(hovering && !reduceMotion ? 1.02 : 1)
     }
     .buttonStyle(.plain)
     .disabled(starting)
     .onHover { value in
-      withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-        hovering = value
-      }
+      // 滚动时悬停进/出都不处理：卡片扫过指针的连环悬停翻转实测每次 112~125ms，
+      // 是滚动帧率低的直接来源；弹簧缩放+阴影动画也一并移除
+      guard !state.liveScrolling else { return }
+      hovering = value
     }
     .help(t("点击管理：启动 / 重启 / 关闭", "Click to manage: start / restart / stop"))
     .popover(isPresented: $showActions, arrowEdge: .bottom) {
@@ -827,7 +892,7 @@ struct FavoriteActionPanel: View {
 
   func depUrl(_ dep: DepStatus) -> URL? {
     guard dep.running, let port = dep.port, !dep.isDocker else { return nil }
-    return serviceURL(port: port, scope: dep.scope)
+    return serviceURL(port: port, scope: dep.scope, path: dep.uiPath)
   }
 
   func bulkButton(_ title: String, icon: String, tint: Color, action: ServiceAction) -> some View {
@@ -866,6 +931,10 @@ struct FavoriteActionPanel: View {
       Spacer(minLength: 14)
       if let url {
         rowIcon("safari", t("在浏览器打开", "Open in browser")) { NSWorkspace.shared.open(url) }
+      }
+      rowIcon("info.circle", t("详细信息", "Details"), disabled: !running) {
+        state.showDetails(favoritePort: port)
+        dismiss()
       }
       rowIcon("play.fill", t("启动", "Start"), disabled: running) {
         state.perform(.start, favorite, dep: dep)
@@ -984,72 +1053,77 @@ struct PortsTable: View {
     }
   }
 
+  /* 列排序的型别约束（真机 typecheck 实测，macOS 14 SDK）：
+     - builder 单层最多 10 列，12 列必须分组；
+     - Group 内可排序列与普通列混放会把 Sort 推断成 Never 而编译失败；
+     - 但外层扁平位置可以混放。→ 可排序列进同质 Group，普通列留在外层 */
   var fullTable: some View {
-    Table(state.visibleTree, children: \.children, selection: $state.tableSelection) {
+    Table(state.visibleTree, children: \.children,
+          selection: $state.tableSelection, sortOrder: $state.tableSort) {
+      TableColumn("") { (row: PortRow) in
+        favStar(row)
+      }
+      .width(24)
       Group {
-        TableColumn("") { (row: PortRow) in
-          favStar(row)
-        }
-        .width(24)
-        TableColumn(t("端口", "Port")) { (row: PortRow) in
+        TableColumn(t("端口", "Port"), value: \.sortPort) { (row: PortRow) in
           portLabel(row)
         }
         .width(min: 56, ideal: 64)
-        TableColumn(t("进程", "Process")) { (row: PortRow) in
+        TableColumn(t("进程", "Process"), value: \.name) { (row: PortRow) in
           procLabel(row)
         }
         .width(min: 100, ideal: 140)
-        TableColumn(t("标题", "Title")) { (row: PortRow) in
+        TableColumn(t("标题", "Title"), value: \.title) { (row: PortRow) in
           titleWithGroupBadge(row)
         }
         .width(min: 100, ideal: 180)
-        TableColumn(t("标签", "Tags")) { (row: PortRow) in
-          Text(row.tags.joined(separator: " · "))
-            .font(.system(size: 10.5))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-        }
-        .width(min: 70, ideal: 110)
-        TableColumn("HTTP") { (row: PortRow) in
-          httpLabel(row)
-        }
-        .width(min: 70, ideal: 84)
       }
+      TableColumn(t("标签", "Tags")) { (row: PortRow) in
+        Text(row.tags.joined(separator: " · "))
+          .font(.system(size: 10.5))
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+      }
+      .width(min: 70, ideal: 110)
+      TableColumn("HTTP") { (row: PortRow) in
+        httpLabel(row)
+      }
+      .width(min: 70, ideal: 84)
       Group {
-        TableColumn("PID") { (row: PortRow) in
+        TableColumn("PID", value: \.pid) { (row: PortRow) in
           Text(String(row.pid)).font(.system(size: 11, design: .monospaced))
         }
         .width(min: 46, ideal: 56)
-        TableColumn("CPU%") { (row: PortRow) in
+        TableColumn("CPU%", value: \.cpu) { (row: PortRow) in
           Text(String(format: "%.1f", row.cpu)).font(.system(size: 11, design: .monospaced))
         }
         .width(min: 44, ideal: 50)
-        TableColumn("MEM%") { (row: PortRow) in
+        TableColumn("MEM%", value: \.memory) { (row: PortRow) in
           Text(String(format: "%.1f", row.memory)).font(.system(size: 11, design: .monospaced))
         }
         .width(min: 44, ideal: 52)
-        TableColumn(t("运行", "Uptime")) { (row: PortRow) in
+        TableColumn(t("运行", "Uptime"), value: \.sortUptime) { (row: PortRow) in
           Text(row.uptime).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
         }
         .width(min: 60, ideal: 74)
-        TableColumn(t("工作目录", "Directory")) { (row: PortRow) in
-          Text(row.cwd)
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .truncationMode(.head)
-            .help(row.cwd)
-        }
-        .width(min: 120, ideal: 220)
-        TableColumn(t("命令", "Command")) { (row: PortRow) in
-          Text(row.command)
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .help(row.command)
-        }
-        .width(min: 120, ideal: 260)
       }
+      TableColumn(t("工作目录", "Directory")) { (row: PortRow) in
+        Text(row.cwd)
+          .font(.system(size: 11, design: .monospaced))
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .truncationMode(.head)
+          .help(row.cwd)
+      }
+      .width(min: 120, ideal: 220)
+      TableColumn(t("命令", "Command")) { (row: PortRow) in
+        Text(row.command)
+          .font(.system(size: 11, design: .monospaced))
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .help(row.command)
+      }
+      .width(min: 120, ideal: 260)
     }
   }
 
@@ -1244,6 +1318,7 @@ struct RowMenuItems: View {
     if row.serviceId != nil {
       Button(state.isFavorite(row) ? t("取消收藏", "Unfavorite") : t("收藏到侧栏", "Add to sidebar")) { state.toggleFavorite(row) }
     }
+    Button(state.isIgnored(row) ? t("取消忽略", "Unignore") : t("忽略此服务", "Ignore this service")) { state.toggleIgnore(row) }
     if canRestart(row) {
       Button(t("重启", "Restart")) { state.requestRestart(row) }
     }
@@ -1299,9 +1374,6 @@ struct ActionDialogs: ViewModifier {
 
   func body(content: Content) -> some View {
     content
-      .sheet(item: $state.detailTarget) { row in
-        DetailSheet(row: row)
-      }
       .alert(t("结束 PID", "Kill PID") + " \(state.killTarget?.pid ?? 0)", isPresented: strongKillBinding) {
         Button(t("结束进程树", "Kill process tree"), role: .destructive) { confirmStrongKill() }
         Button(t("取消", "Cancel"), role: .cancel) { state.killTarget = nil }
@@ -1432,11 +1504,153 @@ struct StoppedTable: View {
   }
 }
 
-// MARK: - 详情
+// MARK: - 详情页（占满主区，替代原 DetailSheet 弹窗）
 
-struct DetailSheet: View {
-  @Environment(\.dismiss) private var dismiss
-  let row: PortRow
+/// 图表分类色（8 槽，浅/深色各一套，经色盲安全校验，顺序即安全机制，不要重排）
+let seriesPalette: [Color] = [
+  chartColor(0x2A78D6, 0x3987E5), chartColor(0x1BAF7A, 0x199E70),
+  chartColor(0xEDA100, 0xC98500), chartColor(0x008300, 0x008300),
+  chartColor(0x4A3AA7, 0x9085E9), chartColor(0xE34948, 0xE66767),
+  chartColor(0xE87BA4, 0xD55181), chartColor(0xEB6834, 0xD95926)
+]
+
+func chartColor(_ light: UInt32, _ dark: UInt32) -> Color {
+  func rgb(_ v: UInt32) -> NSColor {
+    NSColor(srgbRed: CGFloat((v >> 16) & 0xFF) / 255,
+            green: CGFloat((v >> 8) & 0xFF) / 255,
+            blue: CGFloat(v & 0xFF) / 255, alpha: 1)
+  }
+  return Color(nsColor: NSColor(name: nil) { appearance in
+    appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? rgb(dark) : rgb(light)
+  })
+}
+
+/* 进程树条目：详情页的树表行 = 图表的一条线，同下标同颜色 */
+struct TreeEntry: Identifiable {
+  let proc: TreeProc
+  let depth: Int
+  var id: Int { proc.pid }
+}
+
+/* 一条折线：标签 + 颜色 + 采样序列 */
+struct UsageSeries: Identifiable {
+  let label: String
+  let color: Color
+  let samples: [UsageSample]
+  var id: String { label }
+}
+
+struct DetailPage: View {
+  @EnvironmentObject var state: AppState
+  let initialRow: PortRow
+
+  /// 每轮快照按 pid 找活行；进程退出后保留最后一份数据并标注「已退出」
+  var liveRow: PortRow? {
+    (state.snapshot.ports + state.snapshot.agentProcesses).first { $0.pid == initialRow.pid }
+  }
+  var row: PortRow { liveRow ?? initialRow }
+  var exited: Bool { liveRow == nil }
+
+  var body: some View {
+    let entries = treeEntries(row)
+    let series = buildSeries(entries)
+    ScrollView {
+      VStack(alignment: .leading, spacing: 26) {
+        header
+        section(t("基本信息", "Info")) { factsCard }
+        section(t("进程树", "Process tree"),
+                subtitle: t("父进程与全部子进程，每行颜色对应下方折线。", "Parent and all descendants; row colors match the chart lines."),
+                count: entries.count + (row.parentPid != nil ? 1 : 0)) {
+          treeCard(entries)
+        }
+        section(t("CPU 使用历史", "CPU history"),
+                subtitle: t("进程树里每个进程一条线，约 3 秒采样一次，保留最近 10 分钟。悬停查看数值。", "One line per process, sampled ~every 3s, last 10 minutes. Hover for values.")) {
+          UsageChart(series: series, metric: \.cpu)
+        }
+        section(t("内存占用历史", "Memory history"),
+                subtitle: t("MEM% 是进程占系统总内存的百分比，与列表里的 MEM% 同口径。", "MEM% is the share of total system memory, same as the list column.")) {
+          UsageChart(series: series, metric: \.memory)
+        }
+      }
+      .padding(22)
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  var header: some View {
+    HStack(spacing: 12) {
+      Button {
+        state.detailTarget = nil
+      } label: {
+        Label(t("返回", "Back"), systemImage: "chevron.left")
+      }
+      .keyboardShortcut(.cancelAction)
+      VStack(alignment: .leading, spacing: 1) {
+        Text(t("详细信息", "Details")).font(.caption).foregroundStyle(.secondary)
+        Text(row.port != nil ? "\(row.name) · " + t("端口", "port") + " \(row.port!)" : "\(row.name) · PID \(row.pid)")
+          .font(.system(size: 15, weight: .semibold, design: .monospaced))
+      }
+      if exited {
+        statusPill(t("已退出", "exited"), color: .orange)
+      }
+      Spacer()
+      // 操作直接放详情页里，不用回列表右键或去工具栏找（确认弹窗走全局 ActionDialogs）
+      if !exited {
+        if let url = row.localUrl {
+          Button {
+            NSWorkspace.shared.open(url)
+          } label: {
+            Label(t("打开", "Open"), systemImage: "safari")
+          }
+          .help(t("在浏览器打开", "Open in browser"))
+        }
+        if canRestart(row) {
+          Button {
+            state.requestRestart(row)
+          } label: {
+            Label(t("重启", "Restart"), systemImage: "arrow.clockwise.circle")
+          }
+          .help(t("重启该服务", "Restart this service"))
+        }
+        Button(role: .destructive) {
+          state.requestKill(row)
+        } label: {
+          Label(t("结束", "Kill"), systemImage: "stop.circle")
+        }
+        .help(t("结束进程", "Kill process"))
+      }
+    }
+  }
+
+  @ViewBuilder
+  func section<Content: View>(
+    _ title: String, subtitle: String = "", count: Int? = nil, @ViewBuilder content: () -> Content
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 11) {
+      HStack(spacing: 7) {
+        Text(title)
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(.secondary)
+        if let count {
+          Text(String(count))
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(.quaternary, in: Capsule())
+        }
+        if !subtitle.isEmpty {
+          Text(subtitle)
+            .font(.system(size: 10.5))
+            .foregroundStyle(.tertiary)
+        }
+        Spacer()
+      }
+      content()
+    }
+  }
+
+  // MARK: 基本信息
 
   var facts: [(String, String)] {
     var list: [(String, String)] = []
@@ -1445,7 +1659,9 @@ struct DetailSheet: View {
       list.append((t("范围", "Scope"), row.scope == "all" ? t("全部地址", "all interfaces") : row.scope == "loopback" ? "localhost" : t("本机地址", "host only")))
     }
     list.append(("PID", String(row.pid)))
-    if let parentPid = row.parentPid { list.append((t("父 PID", "Parent PID"), String(parentPid))) }
+    if let parentPid = row.parentPid {
+      list.append((t("父进程", "Parent"), row.parentName.isEmpty ? String(parentPid) : "\(row.parentName) (\(parentPid))"))
+    }
     list.append((t("进程", "Process"), row.name))
     list.append((t("用户", "User"), row.user))
     list.append(("CPU%", String(format: "%.1f", row.cpu)))
@@ -1453,7 +1669,7 @@ struct DetailSheet: View {
     if !row.started.isEmpty { list.append((t("启动", "Started"), row.started)) }
     if !row.uptime.isEmpty { list.append((t("运行", "Uptime"), row.uptime)) }
     if !row.descendantPids.isEmpty {
-      list.append((t("子进程", "Children"), t("\(row.descendantPids.count) 个: ", "\(row.descendantPids.count): ") + row.descendantPids.map(String.init).joined(separator: ", ")))
+      list.append((t("子进程", "Children"), String(row.descendantPids.count)))
     }
     if let http = row.http {
       list.append(("HTTP", "\(http.status)\(http.statusCode.map { " \($0)" } ?? "")"))
@@ -1466,36 +1682,246 @@ struct DetailSheet: View {
     return list
   }
 
-  var body: some View {
-    VStack(alignment: .leading, spacing: 14) {
-      HStack {
-        VStack(alignment: .leading, spacing: 2) {
-          Text(t("详细信息", "Details")).font(.caption).foregroundStyle(.secondary)
-          Text(row.port != nil ? "\(row.name) · " + t("端口", "port") + " \(row.port!)" : "\(row.name) · PID \(row.pid)")
-            .font(.system(size: 15, weight: .semibold, design: .monospaced))
+  var factsCard: some View {
+    Grid(alignment: .topLeading, horizontalSpacing: 14, verticalSpacing: 6) {
+      ForEach(facts, id: \.0) { fact in
+        GridRow {
+          Text(fact.0)
+            .foregroundStyle(.secondary)
+            .frame(width: 74, alignment: .leading)
+          Text(fact.1)
+            .font(.system(size: 11.5, design: .monospaced))
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        Spacer()
-        Button(t("关闭", "Close")) { dismiss() }
-          .keyboardShortcut(.cancelAction)
       }
-      ScrollView {
-        Grid(alignment: .topLeading, horizontalSpacing: 14, verticalSpacing: 6) {
-          ForEach(facts, id: \.0) { fact in
-            GridRow {
-              Text(fact.0)
-                .foregroundStyle(.secondary)
-                .frame(width: 70, alignment: .leading)
-              Text(fact.1)
-                .font(.system(size: 11.5, design: .monospaced))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .cardSurface()
+  }
+
+  // MARK: 进程树
+
+  /// 目标 + 全部子孙按父子关系排成先序，深度决定缩进
+  func treeEntries(_ row: PortRow) -> [TreeEntry] {
+    let root = TreeProc(pid: row.pid, name: row.name, cpu: row.cpu, memory: row.memory,
+                        parentPid: row.parentPid ?? 0, command: row.command)
+    var childrenOf: [Int: [TreeProc]] = [:]
+    for proc in row.treeProcs {
+      childrenOf[proc.parentPid, default: []].append(proc)
+    }
+    var result: [TreeEntry] = []
+    func walk(_ proc: TreeProc, _ depth: Int) {
+      result.append(TreeEntry(proc: proc, depth: depth))
+      for child in (childrenOf[proc.pid] ?? []).sorted(by: { $0.pid < $1.pid }) {
+        walk(child, depth + 1)
+      }
+    }
+    walk(root, 0)
+    return result
+  }
+
+  func treeCard(_ entries: [TreeEntry]) -> some View {
+    VStack(spacing: 0) {
+      if let parentPid = row.parentPid {
+        treeRow(swatch: nil,
+                name: row.parentName.isEmpty ? String(parentPid) : row.parentName,
+                pid: parentPid, cpu: nil, memory: nil, command: "", depth: 0, isParent: true)
+        Divider().padding(.leading, 14)
+      }
+      ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+        treeRow(swatch: index < seriesPalette.count ? seriesPalette[index] : Color.secondary,
+                name: entry.proc.name, pid: entry.proc.pid,
+                cpu: entry.proc.cpu, memory: entry.proc.memory,
+                command: entry.proc.command,
+                depth: entry.depth + (row.parentPid != nil ? 1 : 0),
+                isParent: false)
+        if index != entries.count - 1 {
+          Divider().padding(.leading, 14)
+        }
+      }
+    }
+    .cardSurface()
+  }
+
+  func treeRow(swatch: Color?, name: String, pid: Int, cpu: Double?, memory: Double?,
+               command: String, depth: Int, isParent: Bool) -> some View {
+    HStack(spacing: 8) {
+      Group {
+        if let swatch {
+          RoundedRectangle(cornerRadius: 3).fill(swatch)
+        } else {
+          RoundedRectangle(cornerRadius: 3)
+            .strokeBorder(Color.secondary.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [2, 2]))
+        }
+      }
+      .frame(width: 10, height: 10)
+      .padding(.leading, CGFloat(depth) * 18)
+      Text(name)
+        .font(.system(size: 12, weight: pid == row.pid ? .semibold : .regular))
+        .lineLimit(1)
+      if isParent {
+        Text(t("父进程", "parent"))
+          .font(.system(size: 9.5, weight: .semibold, design: .rounded))
+          .foregroundStyle(.secondary)
+          .padding(.horizontal, 5)
+          .padding(.vertical, 1)
+          .background(.quaternary, in: Capsule())
+      }
+      Text(String(pid))
+        .font(.system(size: 11, design: .monospaced))
+        .foregroundStyle(.tertiary)
+      if !command.isEmpty {
+        Text(command)
+          .font(.system(size: 10.5, design: .monospaced))
+          .foregroundStyle(.tertiary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .help(command)
+      }
+      Spacer(minLength: 12)
+      Text(cpu.map { String(format: "%.1f%%", $0) } ?? "--")
+        .font(.system(size: 11, design: .monospaced))
+        .frame(width: 52, alignment: .trailing)
+      Text(memory.map { String(format: "%.1f%%", $0) } ?? "--")
+        .font(.system(size: 11, design: .monospaced))
+        .foregroundStyle(.secondary)
+        .frame(width: 52, alignment: .trailing)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 6)
+  }
+
+  // MARK: 折线序列
+
+  /// 前 8 个进程各占一条线（颜色跟树表行一致），更多的合并为「其他合计」灰线
+  func buildSeries(_ entries: [TreeEntry]) -> [UsageSeries] {
+    let history = Monitor.history(for: entries.map(\.proc.pid))
+    var series: [UsageSeries] = []
+    var folded: [Date: (cpu: Double, memory: Double)] = [:]
+    for (index, entry) in entries.enumerated() {
+      let samples = history[entry.proc.pid] ?? []
+      if index < seriesPalette.count {
+        series.append(UsageSeries(label: "\(entry.proc.name) (\(entry.proc.pid))",
+                                  color: seriesPalette[index], samples: samples))
+      } else {
+        for sample in samples {
+          var acc = folded[sample.t] ?? (0, 0)
+          acc.cpu += sample.cpu
+          acc.memory += sample.memory
+          folded[sample.t] = acc
+        }
+      }
+    }
+    if entries.count > seriesPalette.count {
+      let count = entries.count - seriesPalette.count
+      series.append(UsageSeries(
+        label: t("其他 \(count) 个进程合计", "Other \(count) combined"),
+        color: .secondary,
+        samples: folded.map { UsageSample(t: $0.key, cpu: $0.value.cpu, memory: $0.value.memory) }
+          .sorted { $0.t < $1.t }))
+    }
+    return series
+  }
+}
+
+// MARK: - 使用历史折线图（Swift Charts）
+
+struct UsageChart: View {
+  let series: [UsageSeries]
+  let metric: KeyPath<UsageSample, Double>
+  @State private var selectedDate: Date?
+
+  var hasData: Bool {
+    series.contains { $0.samples.count >= 2 }
+  }
+
+  /// 悬停位置吸附到最近的采样时间点
+  var snappedDate: Date? {
+    guard let selectedDate else { return nil }
+    let all = series.flatMap { $0.samples.map(\.t) }
+    return all.min { abs($0.timeIntervalSince(selectedDate)) < abs($1.timeIntervalSince(selectedDate)) }
+  }
+
+  /// 选中时间点上每条线的值（3 秒采样，容差 2 秒内算命中），按值降序
+  var selectedValues: [(label: String, color: Color, value: Double)] {
+    guard let snappedDate else { return [] }
+    return series.compactMap { s in
+      s.samples
+        .min { abs($0.t.timeIntervalSince(snappedDate)) < abs($1.t.timeIntervalSince(snappedDate)) }
+        .flatMap { abs($0.t.timeIntervalSince(snappedDate)) <= 2 ? (s.label, s.color, $0[keyPath: metric]) : nil }
+    }
+    .sorted { $0.value > $1.value }
+  }
+
+  var body: some View {
+    Group {
+      if hasData {
+        chart
+      } else {
+        Text(t("正在采集数据，几秒后出现曲线…", "Collecting data; lines appear in a few seconds…"))
+          .font(.system(size: 12))
+          .foregroundStyle(.tertiary)
+          .frame(maxWidth: .infinity, minHeight: 120)
+      }
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .cardSurface()
+  }
+
+  var chart: some View {
+    Chart {
+      ForEach(series) { s in
+        ForEach(s.samples, id: \.t) { sample in
+          LineMark(
+            x: .value(t("时间", "Time"), sample.t),
+            y: .value("%", sample[keyPath: metric]),
+            series: .value(t("进程", "Process"), s.label)
+          )
+          .foregroundStyle(by: .value(t("进程", "Process"), s.label))
+          .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+        }
+      }
+      if let snappedDate {
+        RuleMark(x: .value(t("时间", "Time"), snappedDate))
+          .foregroundStyle(.secondary.opacity(0.6))
+          .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+      }
+    }
+    .chartForegroundStyleScale(domain: series.map(\.label), range: series.map(\.color))
+    .chartXSelection(value: $selectedDate)
+    .chartLegend(position: .bottom, spacing: 10)
+    .chartYAxis {
+      AxisMarks(values: .automatic(desiredCount: 4)) { _ in
+        AxisGridLine()
+        AxisValueLabel(format: FloatingPointFormatStyle<Double>().precision(.significantDigits(1...2)))
+      }
+    }
+    .frame(height: 190)
+    .overlay(alignment: .topLeading) {
+      if let snappedDate, !selectedValues.isEmpty {
+        VStack(alignment: .leading, spacing: 3) {
+          Text(snappedDate.formatted(date: .omitted, time: .standard))
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(.secondary)
+          ForEach(selectedValues, id: \.label) { item in
+            HStack(spacing: 5) {
+              RoundedRectangle(cornerRadius: 2).fill(item.color).frame(width: 8, height: 8)
+              Text(item.label)
+                .font(.system(size: 10.5))
+                .lineLimit(1)
+              Text(String(format: "%.1f%%", item.value))
+                .font(.system(size: 10.5, design: .monospaced))
             }
           }
         }
+        .padding(8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.08)))
+        .allowsHitTesting(false)
       }
-      .frame(maxHeight: 320)
     }
-    .padding(20)
-    .frame(width: 500)
   }
 }

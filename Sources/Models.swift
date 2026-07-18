@@ -31,15 +31,20 @@ func lanIPv4() -> String? {
 }
 
 let lanShareKey = "portdock-lan-share"
+let ignoredDefaultsKey = "portdock-ignored"
 
 /* 打开服务的 URL：默认 localhost；开了局域网共享用本机局域网 IP——
-   但绑定在 127.0.0.1 的服务（scope == loopback）局域网 IP 连不上，仍走 localhost */
-func serviceURL(port: Int, scope: String) -> URL? {
+   但绑定在 127.0.0.1 的服务（scope == loopback）局域网 IP 连不上，仍走 localhost。
+   path：API 服务探测到的管理台路径（如 management.html），有则深链过去 */
+func serviceURL(port: Int, scope: String, path: String = "") -> URL? {
+  let host: String
   if UserDefaults.standard.bool(forKey: lanShareKey),
      scope != "loopback", let ip = lanIPv4() {
-    return URL(string: "http://\(ip):\(port)")
+    host = ip
+  } else {
+    host = "localhost"
   }
-  return URL(string: "http://localhost:\(port)")
+  return URL(string: "http://\(host):\(port)" + (path.isEmpty ? "" : "/\(path)"))
 }
 
 struct ProbeResult: Hashable {
@@ -47,15 +52,26 @@ struct ProbeResult: Hashable {
   var statusCode: Int?
   var latencyMs: Int?
   var title: String = ""
+  var uiPath: String = ""   // 根路径是 JSON 的 API 服务，探测到的管理台路径（不带前导斜杠）
 }
 
-/* 进程树成员（CPU 排行明细用）：pid + 名字 + 自身 CPU */
+/* 进程树成员（CPU 排行明细、详情页进程树/折线图用） */
 struct TreeProc: Hashable, Identifiable {
   var pid: Int
   var name: String
   var cpu: Double
+  var memory: Double = 0
+  var parentPid: Int = 0
+  var command: String = ""
 
   var id: Int { pid }
+}
+
+/* 单次采样点：详情页 CPU/内存历史折线图的数据单位 */
+struct UsageSample: Hashable {
+  var t: Date
+  var cpu: Double
+  var memory: Double
 }
 
 struct PortRow: Identifiable, Hashable {
@@ -66,6 +82,7 @@ struct PortRow: Identifiable, Hashable {
   var scope: String = ""     // all / loopback / host
   var pid: Int
   var parentPid: Int?
+  var parentName: String = ""
   var name: String = ""
   var command: String = ""
   var user: String = ""
@@ -91,7 +108,7 @@ struct PortRow: Identifiable, Hashable {
 
   var localUrl: URL? {
     guard let port else { return nil }
-    return serviceURL(port: port, scope: scope)
+    return serviceURL(port: port, scope: scope, path: http?.uiPath ?? "")
   }
 
   var serviceId: String? {
@@ -108,6 +125,10 @@ struct PortRow: Identifiable, Hashable {
     if hours < 48 { return "\(hours)h \(minutes % 60)m" }
     return "\(hours / 24)d \(hours % 24)h"
   }
+
+  // 表格列排序键（KeyPathComparator 要求非 Optional 的 Comparable）
+  var sortPort: Int { port ?? Int.max }
+  var sortUptime: TimeInterval { startedAt.map { -$0.timeIntervalSinceNow } ?? 0 }
 }
 
 /* 本机服务间的 TCP 依赖边：src 进程连着 dst 进程监听的端口 */
@@ -131,6 +152,8 @@ struct ServiceRecord: Codable, Identifiable, Hashable {
   var favorite: Bool? = false
   // 观察到的依赖：其他记录的 id，或 "docker-port:<端口>"（docker 发布端口 → 容器）
   var dependsOn: [String]? = nil
+  // 收藏的手动排序位（侧栏拖拽写入）；nil 排最后、按标题字母序兜底
+  var sortOrder: Int? = nil
 
   var isFavorite: Bool { favorite ?? false }
 }
@@ -142,6 +165,7 @@ struct DepStatus: Hashable, Identifiable {
   var port: Int?
   var scope: String = ""
   var running: Bool
+  var uiPath: String = ""
 
   var isDocker: Bool { id.hasPrefix("docker-port:") }
 }
@@ -166,6 +190,15 @@ enum ServiceAction {
     case .stop: return t("已关闭", "Stopped")
     }
   }
+
+  /* 进行时态：操作要 1~2 秒（杀树+核对），先给即时反馈 */
+  var doing: String {
+    switch self {
+    case .start: return t("正在启动…", "Starting…")
+    case .restart: return t("正在重启…", "Restarting…")
+    case .stop: return t("正在关闭…", "Stopping…")
+    }
+  }
 }
 
 struct FavoriteItem: Identifiable, Hashable {
@@ -175,6 +208,7 @@ struct FavoriteItem: Identifiable, Hashable {
   var liveScope: String = ""
   var liveUptime: String = ""
   var liveCpu: Double = 0
+  var liveUiPath: String = ""
   var deps: [DepStatus] = []
 
   var id: String { record.id }
@@ -184,7 +218,7 @@ struct FavoriteItem: Identifiable, Hashable {
   }
   var localUrl: URL? {
     guard running, let livePort else { return nil }
-    return serviceURL(port: livePort, scope: liveScope)
+    return serviceURL(port: livePort, scope: liveScope, path: liveUiPath)
   }
 }
 
@@ -220,6 +254,7 @@ enum SidebarSelection: Hashable {
   case all
   case category(Category)
   case stopped
+  case ignored
 }
 
 /* 依赖分组：进程树（父子进程）+ 同项目目录（cwd 相同/互为子目录/同 .git 根）
