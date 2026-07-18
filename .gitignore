@@ -3,3 +3,4 @@ build/
 icon/AppIcon.iconset/
 *.dmg
 .serena/
+dist/

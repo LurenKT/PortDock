@@ -1033,7 +1033,8 @@ enum Monitor {
     }
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/bin/sh")
-    process.arguments = ["-c", "cd \(shellQuote(cwd)) && nohup \(command) >/dev/null 2>&1 &"]
+    // GUI app 的 PATH 只有系统目录，respawn 的服务会找不到 docker/node 等 CLI
+    process.arguments = ["-c", "export PATH=\"/usr/local/bin:/opt/homebrew/bin:$PATH\"; cd \(shellQuote(cwd)) && nohup \(command) >/dev/null 2>&1 &"]
     do {
       try process.run()
       return ActionResult(ok: true, message: t("已发起启动", "Start requested"))
