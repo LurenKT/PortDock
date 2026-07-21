@@ -27,6 +27,16 @@ PortDock is a native macOS monitor for local dev services — every listening po
 
 ## Install
 
+**Homebrew**
+
+```bash
+brew install --cask lurenkt/tap/portdock
+```
+
+If Homebrew reports an untrusted tap, run `brew trust lurenkt/tap` once and retry.
+
+**Direct download**
+
 Download the latest `.dmg` from [Releases](https://github.com/LurenKT/PortDock/releases/latest) and drag PortDock to Applications. Signed & notarized by Apple — it opens without warnings.
 
 Requires macOS 14.0+ (Apple Silicon & Intel).
